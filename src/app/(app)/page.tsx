@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ApprovalCard } from "@/components/ApprovalCard";
+import { CardArt } from "@/components/CardArt";
 import { Delta } from "@/components/Delta";
 import { GameChip } from "@/components/GameChip";
 import { PriceChart } from "@/components/PriceChart";
@@ -8,9 +9,11 @@ import { EmptyState } from "@/components/states";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { formatCountdown, formatMoney } from "@/lib/format";
+import { HEADLINE_TAG_META, HEADLINES } from "@/lib/headlines";
 import { pctChange } from "@/lib/math";
 import { buildApprovalData } from "@/lib/proposalView";
 import { getDashboardStats, getPortfolioSeries, getTopMovers, getInventoryRows } from "@/lib/queries";
+import { daysUntil, RELEASE_TYPE_META, RELEASES, relativeDay } from "@/lib/releases";
 
 function valueDaysAgo(series: { t: number; v: number }[], days: number): number | null {
   if (series.length === 0) return null;
@@ -49,6 +52,7 @@ export default async function DashboardPage() {
       gameSlug: p.card.game.slug,
       gameName: p.card.game.name,
       dataQuality: p.card.game.dataQuality,
+      imageUrl: p.card.imageUrl,
     })
   );
 
@@ -59,6 +63,9 @@ export default async function DashboardPage() {
   const sparkPts = series.slice(-14).map((p) => p.v);
 
   const hasHoldings = summary.quantity > 0;
+
+  const nextReleases = [...RELEASES].filter((r) => daysUntil(r.date) >= 0).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 3);
+  const topHeadlines = [...HEADLINES].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3);
 
   return (
     <>
@@ -188,11 +195,16 @@ export default async function DashboardPage() {
                 {movers.map((m) => (
                   <tr key={m.cardId}>
                     <td>
-                      <Link href={`/cards/${m.cardId}`}>
-                        <div className="cname">{m.name}</div>
-                        <div className="cset">
-                          {m.setName} · {m.rarity}
-                        </div>
+                      <Link href={`/cards/${m.cardId}`} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <CardArt name={m.name} gameSlug={m.gameSlug} setCode={m.setName} rarity={m.rarity} imageUrl={m.imageUrl} size="thumb" />
+                        <span>
+                          <span className="cname" style={{ display: "block" }}>
+                            {m.name}
+                          </span>
+                          <span className="cset">
+                            {m.setName} · {m.rarity}
+                          </span>
+                        </span>
                       </Link>
                     </td>
                     <td>
@@ -221,6 +233,63 @@ export default async function DashboardPage() {
         )}
         <div className="hint" style={{ marginTop: 10 }}>
           *Spread = best cross-marketplace buy→sell gap after your fee profile. Full math on each card page.
+        </div>
+      </div>
+
+      {/* Releases & community headlines */}
+      <div className="cols" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14, alignItems: "start" }}>
+        <div className="panel">
+          <div className="phead">
+            <div>
+              <h2>Next releases</h2>
+              <div className="hint">When the market shifts &amp; cards leave rotation</div>
+            </div>
+            <Link className="btn ghost sm" href="/releases">
+              All →
+            </Link>
+          </div>
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column" }}>
+            {nextReleases.map((r) => (
+              <div key={r.id} style={{ display: "flex", gap: 10, padding: "9px 0", borderBottom: "1px solid var(--grid)" }}>
+                <span className="fic" aria-hidden="true">
+                  {RELEASE_TYPE_META[r.type].icon}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{r.title}</div>
+                  <div className="hint">{RELEASE_TYPE_META[r.type].label}</div>
+                </div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap", color: daysUntil(r.date) <= 14 ? "var(--warn)" : "var(--ink-2)" }}>
+                  {relativeDay(r.date)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="panel">
+          <div className="phead">
+            <div>
+              <h2>Community headlines</h2>
+              <div className="hint">Why prices are moving</div>
+            </div>
+            <Link className="btn ghost sm" href="/releases">
+              More →
+            </Link>
+          </div>
+          <ul className="feed" style={{ marginTop: 6 }}>
+            {topHeadlines.map((h) => (
+              <li key={h.id}>
+                <span className="fic" aria-hidden="true">
+                  {HEADLINE_TAG_META[h.tag].icon}
+                </span>
+                <div className="ft">
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{h.title}</div>
+                  <div className="t">
+                    {h.source} · {relativeDay(h.date)}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     </>

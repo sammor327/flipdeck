@@ -2,6 +2,7 @@
 // shape rows using the pure helpers (portfolio, stats). Not "use server" — they
 // are plain async functions called from server components.
 
+import type { CardRow } from "./cardRow";
 import { CONDITION_MULTIPLIER, type Condition } from "./constants";
 import { prisma } from "./db";
 import { round2 } from "./math";
@@ -17,6 +18,7 @@ export interface InventoryRow {
   rarity: string;
   gameSlug: string;
   gameName: string;
+  imageUrl: string | null;
   condition: Condition;
   quantity: number;
   costBasis: number;
@@ -39,7 +41,7 @@ export function parseTags(s: string): string[] {
     .filter(Boolean);
 }
 
-async function sparkMap(cardIds: string[], days = 8): Promise<Map<string, number[]>> {
+export async function sparkMap(cardIds: string[], days = 8): Promise<Map<string, number[]>> {
   if (cardIds.length === 0) return new Map();
   const since = new Date(Date.now() - days * 24 * 3600 * 1000);
   const rows = await prisma.pricePoint.findMany({
@@ -98,6 +100,7 @@ export async function getInventoryRows(userId: string): Promise<{ rows: Inventor
       rarity: it.card.rarity,
       gameSlug: it.card.game.slug,
       gameName: it.card.game.name,
+      imageUrl: it.card.imageUrl,
       condition: it.condition as Condition,
       quantity: it.quantity,
       costBasis: it.costBasis,
@@ -136,6 +139,7 @@ export interface MoverRow {
   rarity: string;
   gameSlug: string;
   gameName: string;
+  imageUrl: string | null;
   price: number;
   delta24hPct: number | null;
   delta7dPct: number | null;
@@ -164,6 +168,7 @@ export async function getTopMovers(userId: string, limit = 6): Promise<MoverRow[
     rarity: s.card.rarity,
     gameSlug: s.card.game.slug,
     gameName: s.card.game.name,
+    imageUrl: s.card.imageUrl,
     price: s.currentPrice,
     delta24hPct: s.delta24hPct,
     delta7dPct: s.delta7dPct,
@@ -243,4 +248,88 @@ export async function getDashboardStats(userId: string) {
     prisma.tradeProposal.findFirst({ where: { userId, status: "pending" }, orderBy: { expiresAt: "asc" }, select: { expiresAt: true } }),
   ]);
   return { activeRules, firedThisWeek, actedThisWeek, pending, soonestExpiry: soonest?.expiresAt ?? null };
+}
+
+// ── CardRow builders for the reusable CardTable ──────────────────────────────
+
+export async function getWatchlistRows(userId: string): Promise<CardRow[]> {
+  const items = await prisma.watchlistItem.findMany({
+    where: { userId },
+    include: { card: { include: { game: true, marketStat: true } } },
+    orderBy: { createdAt: "desc" },
+  });
+  const sparks = await sparkMap(items.map((i) => i.cardId));
+  return items.map((it) => ({
+    cardId: it.cardId,
+    name: it.card.name,
+    setCode: it.card.setCode,
+    setName: it.card.setName,
+    rarity: it.card.rarity,
+    gameSlug: it.card.game.slug,
+    gameName: it.card.game.name,
+    imageUrl: it.card.imageUrl,
+    price: it.card.marketStat?.currentPrice ?? null,
+    delta24hPct: it.card.marketStat?.delta24hPct ?? null,
+    delta7dPct: it.card.marketStat?.delta7dPct ?? null,
+    spark: sparks.get(it.cardId) ?? [],
+    targetBuyPrice: it.targetBuyPrice,
+    targetSellPrice: it.targetSellPrice,
+    notes: it.notes,
+  }));
+}
+
+export async function getSpreadRows(userId: string): Promise<CardRow[]> {
+  const cardIds = await trackedCardIds(userId);
+  if (cardIds.length === 0) return [];
+  const stats = await prisma.marketStat.findMany({
+    where: { cardId: { in: cardIds }, bestSpreadPct: { not: null } },
+    include: { card: { include: { game: true } } },
+  });
+  return stats.map((s) => ({
+    cardId: s.cardId,
+    name: s.card.name,
+    setCode: s.card.setCode,
+    setName: s.card.setName,
+    rarity: s.card.rarity,
+    gameSlug: s.card.game.slug,
+    gameName: s.card.game.name,
+    imageUrl: s.card.imageUrl,
+    price: s.currentPrice,
+    bestSpreadPct: s.bestSpreadPct,
+    bestSpreadBuy: s.bestSpreadBuy,
+    bestSpreadSell: s.bestSpreadSell,
+    liquidityScore: s.liquidityScore,
+  }));
+}
+
+/** Market-wide movers (all cards), for the dedicated Top Movers page. */
+export async function getMoverRows(userId: string): Promise<CardRow[]> {
+  const stats = await prisma.marketStat.findMany({ include: { card: { include: { game: true } } } });
+  const cardIds = stats.map((s) => s.cardId);
+  const [sparks, ownedRows] = await Promise.all([
+    sparkMap(cardIds),
+    prisma.inventoryItem.findMany({
+      where: { portfolio: { userId }, status: { in: ["owned", "listed"] } },
+      select: { cardId: true },
+      distinct: ["cardId"],
+    }),
+  ]);
+  const owned = new Set(ownedRows.map((r) => r.cardId));
+  return stats.map((s) => ({
+    cardId: s.cardId,
+    name: s.card.name,
+    setCode: s.card.setCode,
+    setName: s.card.setName,
+    rarity: s.card.rarity,
+    gameSlug: s.card.game.slug,
+    gameName: s.card.game.name,
+    imageUrl: s.card.imageUrl,
+    price: s.currentPrice,
+    delta24hPct: s.delta24hPct,
+    delta7dPct: s.delta7dPct,
+    bestSpreadPct: s.bestSpreadPct,
+    liquidityScore: s.liquidityScore,
+    spark: sparks.get(s.cardId) ?? [],
+    owned: owned.has(s.cardId),
+  }));
 }

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { approveProposal, declineProposal, undoDecision } from "@/app/actions/proposals";
 import { UNDO_WINDOW_MS } from "@/lib/constants";
 import { formatCountdown, formatMoney } from "@/lib/format";
+import { CardArt } from "./CardArt";
 import { GameDot } from "./GameChip";
 import { useNow } from "./useNow";
 
@@ -19,7 +20,7 @@ export interface ApprovalCardData {
   netAfterFees: number;
   expiresAt: number; // ms
   createdAt: number; // ms
-  card: { name: string; setName: string; gameSlug: string; gameName: string; condition: string; beta?: boolean };
+  card: { name: string; setName: string; gameSlug: string; gameName: string; condition: string; beta?: boolean; imageUrl?: string | null };
   evidence: { label: string; value: string; tone?: "up" | "down" }[];
   execLabel: string;
   execDescription: string;
@@ -90,14 +91,19 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
 
   return (
     <div className={`apr ${!compact && frac < 0.5 ? "hot" : ""}`}>
-      <div className="row1">
-        <b>{data.card.name}</b>
-        <span className={`side-tag ${sideClass}`}>{sideLabel}</span>
-      </div>
-      <div className="chip" style={{ marginTop: 3 }}>
-        <GameDot slug={data.card.gameSlug} />
-        {data.card.gameName} · {data.card.setName} · {data.card.condition}
-        {data.card.beta ? <span className="badge-beta">beta data</span> : null}
+      <div style={{ display: "flex", gap: 12 }}>
+        <CardArt name={data.card.name} gameSlug={data.card.gameSlug} setCode={data.card.setName} imageUrl={data.card.imageUrl} size={compact ? "thumb" : "sm"} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="row1">
+            <b>{data.card.name}</b>
+            <span className={`side-tag ${sideClass}`}>{sideLabel}</span>
+          </div>
+          <div className="chip" style={{ marginTop: 3 }}>
+            <GameDot slug={data.card.gameSlug} />
+            {data.card.gameName} · {data.card.setName} · {data.card.condition}
+            {data.card.beta ? <span className="badge-beta">beta data</span> : null}
+          </div>
+        </div>
       </div>
       <div className="why">{data.rationale}</div>
 

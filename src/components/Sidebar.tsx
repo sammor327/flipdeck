@@ -8,8 +8,10 @@ const NAV = [
   { href: "/", icon: "◧", label: "Dashboard", exact: true },
   { href: "/inventory", icon: "▤", label: "Inventory" },
   { href: "/watchlist", icon: "☆", label: "Watchlist" },
+  { href: "/movers", icon: "↗", label: "Top Movers" },
   { href: "/alerts", icon: "⚡", label: "Alerts & Approvals", badgeKey: "approvals" as const },
   { href: "/spread", icon: "⇄", label: "Spread Scanner" },
+  { href: "/releases", icon: "◷", label: "Releases & News" },
   { href: "/settings", icon: "⚙", label: "Settings" },
 ];
 

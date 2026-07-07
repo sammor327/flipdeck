@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { CardArt } from "@/components/CardArt";
 import { Delta } from "@/components/Delta";
 import { GameChip } from "@/components/GameChip";
 import { PriceChart } from "@/components/PriceChart";
@@ -98,9 +99,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
       </div>
 
       <div className="hero" style={{ display: "grid", gridTemplateColumns: "190px 1fr 300px", gap: 18, marginBottom: 14, alignItems: "start" }}>
-        <div className="cardimg">
-          {card.imageUrl ? <img src={card.imageUrl} alt={card.name} /> : <span>Card image<br />(publisher CDN)</span>}
-        </div>
+        <CardArt name={card.name} gameSlug={card.game.slug} setCode={card.setCode} rarity={card.rarity} imageUrl={card.imageUrl} size="full" />
 
         <div>
           <h1 style={{ fontSize: 22, marginBottom: 2 }}>{card.name}</h1>

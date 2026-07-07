@@ -30,6 +30,7 @@ export interface ProposalCardRow {
   gameSlug: string;
   gameName: string;
   dataQuality: string;
+  imageUrl: string | null;
 }
 
 export function buildApprovalData(p: ProposalRow, card: ProposalCardRow): ApprovalCardData {
@@ -80,6 +81,7 @@ export function buildApprovalData(p: ProposalRow, card: ProposalCardRow): Approv
       gameName: card.gameName,
       condition: "NM",
       beta: card.dataQuality === "beta",
+      imageUrl: card.imageUrl,
     },
     evidence,
     execLabel: exec.label,

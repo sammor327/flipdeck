@@ -87,6 +87,7 @@ export default async function AlertsPage({ searchParams }: { searchParams: { pro
       gameSlug: p.card.game.slug,
       gameName: p.card.game.name,
       dataQuality: p.card.game.dataQuality,
+      imageUrl: p.card.imageUrl,
     })
   );
 

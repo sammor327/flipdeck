@@ -16,6 +16,7 @@ import {
   sellInventoryItem,
   updateInventoryItem,
 } from "@/app/actions/inventory";
+import { CardArt } from "./CardArt";
 import { Delta } from "./Delta";
 import { GameChip } from "./GameChip";
 import { Sparkline } from "./Sparkline";
@@ -322,12 +323,17 @@ export function InventoryTable({
                       <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} aria-label={`Select ${r.name}`} />
                     </td>
                     <td>
-                      <Link href={`/cards/${r.cardId}`}>
-                        <div className="cname">{r.name}</div>
-                        <div className="cset">
-                          {r.setCode} · {r.rarity} · #{r.collectorNumber}
-                          {r.status === "listed" && r.listedPrice ? ` · Listed ${formatMoney(r.listedPrice)}` : ""}
-                        </div>
+                      <Link href={`/cards/${r.cardId}`} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <CardArt name={r.name} gameSlug={r.gameSlug} setCode={r.setCode} rarity={r.rarity} imageUrl={r.imageUrl} size="thumb" />
+                        <span>
+                          <span className="cname" style={{ display: "block" }}>
+                            {r.name}
+                          </span>
+                          <span className="cset">
+                            {r.setCode} · {r.rarity} · #{r.collectorNumber}
+                            {r.status === "listed" && r.listedPrice ? ` · Listed ${formatMoney(r.listedPrice)}` : ""}
+                          </span>
+                        </span>
                       </Link>
                     </td>
                     <td>

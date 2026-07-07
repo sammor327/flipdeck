@@ -39,11 +39,16 @@ interface CardDef {
   finish?: string;
   target: number; // desired current NM price
   recentDrift?: number; // per-day drift over the last week (sign = recent direction)
+  imageUrl?: string; // real card art (publisher CDN) for marquee cards; others use generated art
 }
 
 // Marquee cards referenced by the mockups, given explicit prices so the demo
 // mirrors the designs.
 const MARQUEE: CardDef[] = [
+  // NOTE: imageUrl is intentionally left unset so every card uses the
+  // self-contained generated CardArt (no external hosts / offline-safe). To show
+  // real art in an environment whose browser can reach publisher CDNs, set
+  // imageUrl here (e.g. Scryfall "cards/named?...&format=image") and re-seed.
   { gameSlug: "mtg", name: "Ragavan, Nimble Pilferer", setName: "Modern Horizons 2", setCode: "MH2", collectorNumber: "138", rarity: "Mythic", target: 71.5, recentDrift: 0.022 },
   { gameSlug: "mtg", name: "The Meathook Massacre", setName: "Innistrad: Midnight Hunt", setCode: "MID", collectorNumber: "112", rarity: "Mythic", target: 47.2, recentDrift: -0.03 },
   { gameSlug: "mtg", name: "Sheoldred, the Apocalypse", setName: "Dominaria United", setCode: "DMU", collectorNumber: "107", rarity: "Mythic", target: 84.9, recentDrift: 0.006 },
@@ -237,7 +242,7 @@ async function main() {
         rarity: def.rarity,
         finish: def.finish ?? "nonfoil",
         language: "EN",
-        imageUrl: null,
+        imageUrl: def.imageUrl ?? null,
       },
     });
     cardIdByName.set(def.name, card.id);
