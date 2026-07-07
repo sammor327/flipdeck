@@ -123,12 +123,16 @@
     padding: 24px 28px;
     max-width: 1280px;
     width: 100%;
+    /* Grid item must allow shrink below its min-content so inner overflow-x
+       scroll containers (wide tables) engage instead of widening the page. */
+    min-width: 0;
   }
   .topbar {
     display: flex;
     align-items: center;
     gap: 16px;
     margin-bottom: 22px;
+    flex-wrap: wrap;
   }
   .search {
     flex: 1;
@@ -822,10 +826,15 @@
 
 @media (max-width: 620px) {
   .main {
-    padding: 16px 14px;
+    /* Keep the top clearance for the fixed mobile nav toggle (don't let the
+       shorthand reset padding-top). */
+    padding: 56px 14px 16px;
   }
   .tiles,
   .strip {
     grid-template-columns: 1fr;
+  }
+  .topbar .search {
+    max-width: none;
   }
 }

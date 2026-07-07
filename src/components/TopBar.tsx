@@ -12,7 +12,7 @@ function initials(name: string | null | undefined, email: string): string {
 export function TopBar({ user }: { user: { name: string | null; email: string } }) {
   return (
     <div className="topbar">
-      <form action="/inventory" method="get" style={{ flex: 1, maxWidth: 460 }}>
+      <form action="/inventory" method="get" style={{ flex: 1, minWidth: 0, maxWidth: 460 }}>
         <input
           className="search"
           type="search"
