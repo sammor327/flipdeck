@@ -1,0 +1,365 @@
+// FlipDeck data model.
+//
+// Provider is SQLite so the app runs with zero external services. The schema is
+// written to stay Postgres-portable: to switch, set `provider = "postgresql"`
+// and point DATABASE_URL at your instance. Two SQLite-driven choices worth
+// noting (both trivially reversible on Postgres):
+//   • No native enums — enum-like columns are Strings, validated in code with
+//     zod (see src/lib/constants.ts for the allowed values). This also matches
+//     the brief's "games table, not an enum" philosophy.
+//   • JSON payloads are stored as String and (de)serialized in code (see
+//     src/lib/json.ts), since SQLite has no native JSON scalar in Prisma.
+//
+// Design principle: PricePoint is append-only (never overwritten) — the history
+// is the moat. MarketStat is a derived, cached rollup recomputed on each ingest.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Catalog
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A supported trading card game. Adding a 6th game is a row here + a provider
+/// adapter — never a code change to core logic.
+model Game {
+  id          String  @id @default(cuid())
+  slug        String  @unique // "mtg" | "riftbound" | "yugioh" | "pokemon" | "lorcana"
+  name        String
+  icon        String // short glyph/emoji used in the UI
+  accentColor String // hex, mirrors the --g-* mockup tokens
+  dataQuality String  @default("stable") // "stable" | "beta"
+  sortOrder   Int     @default(0)
+
+  cards Card[]
+
+  @@index([sortOrder])
+}
+
+/// A specific printing of a card (game + set + collector no + finish + language).
+model Card {
+  id              String @id @default(cuid())
+  gameId          String
+  name            String
+  setName         String
+  setCode         String
+  collectorNumber String
+  rarity          String
+  finish          String @default("nonfoil") // nonfoil | foil | etched | 1st-edition | enchanted | ...
+  language        String @default("EN")
+  imageUrl        String?
+
+  // External catalog ids (nullable — only some sources apply per game).
+  scryfallId    String?
+  tcgplayerId   String?
+  cardmarketId  String?
+  pokemonTcgId  String?
+  ygoprodeckId  String?
+
+  createdAt DateTime @default(now())
+
+  game           Game            @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  pricePoints    PricePoint[]
+  marketStat     MarketStat?
+  inventoryItems InventoryItem[]
+  watchlistItems WatchlistItem[]
+  alertRules     AlertRule[]
+  proposals      TradeProposal[]
+
+  @@index([gameId])
+  @@index([name])
+  @@index([gameId, setCode])
+}
+
+/// Append-only price observation. One row per (card, marketplace, condition,
+/// captured_at). Never updated or deleted.
+model PricePoint {
+  id           String   @id @default(cuid())
+  cardId       String
+  marketplace  String // "tcgplayer" | "cardmarket" | "ebay" | ...
+  condition    String // "NM" | "LP" | "MP" | "HP" | "DM"
+  priceType    String   @default("market") // "market" | "low" | "sold"
+  price        Float
+  currency     String   @default("USD")
+  listingCount Int?
+  capturedAt   DateTime @default(now())
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId, capturedAt])
+  @@index([cardId, marketplace, condition, capturedAt])
+}
+
+/// Derived + cached rollup for a card's default marketplace/condition. Rebuilt
+/// on every ingest so rule evaluation is O(rules), not O(rules × history).
+model MarketStat {
+  id                String   @id @default(cuid())
+  cardId            String   @unique
+  marketplace       String
+  condition         String
+  currentPrice      Float
+  currency          String   @default("USD")
+  delta24hPct       Float? // signed percentage
+  delta7dPct        Float?
+  delta30dPct       Float?
+  volatility        Float? // stdev of daily returns over 30d
+  bestSpreadPct     Float? // best cross-marketplace buy→sell gap after fees
+  bestSpreadBuy     String? // marketplace to buy on
+  bestSpreadSell    String? // marketplace to sell on
+  liquidityScore    Float? // 0–100 (listings + sales velocity)
+  listingCount      Int?
+  low90d            Float?
+  high90d           Float?
+  median90d         Float?
+  updatedAt         DateTime @updatedAt
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Users, auth, settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  image     String?
+  createdAt DateTime @default(now())
+
+  portfolios        Portfolio[]
+  watchlistItems    WatchlistItem[]
+  alertRules        AlertRule[]
+  proposals         TradeProposal[]
+  notifications     NotificationLog[]
+  pushSubscriptions PushSubscription[]
+  sessions          Session[]
+  accounts          Account[]
+  settings          UserSettings?
+}
+
+/// Opaque cookie session (secure, httpOnly). See src/lib/auth.
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// OAuth account link (Google in v1).
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  provider          String // "google"
+  providerAccountId String
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+/// Single-use, short-lived email magic-link token.
+model MagicLinkToken {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  email     String
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([email])
+}
+
+model UserSettings {
+  id                 String  @id @default(cuid())
+  userId             String  @unique
+  quietHoursEnabled  Boolean @default(true)
+  quietHoursStart    Int     @default(1320) // minutes past midnight (22:00)
+  quietHoursEnd      Int     @default(420) //  minutes past midnight (07:00)
+  pushEnabled        Boolean @default(true)
+  emailEnabled       Boolean @default(false)
+  digestMode         Boolean @default(false)
+  dailySpendCap      Float   @default(500)
+  killSwitch         Boolean @default(false)
+  // JSON (stored as String): { "<gameSlug>": "<marketplace>" }
+  defaultMarketplaces String  @default("{}")
+  // JSON (stored as String): { "<marketplace>": { feePct, paymentFeePct, shippingFlat } }
+  feeProfiles         String  @default("{}")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Portfolio & inventory
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Portfolio {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String   @default("My Portfolio")
+  createdAt DateTime @default(now())
+
+  user  User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items InventoryItem[]
+
+  @@index([userId])
+}
+
+model InventoryItem {
+  id                String   @id @default(cuid())
+  portfolioId       String
+  cardId            String
+  quantity          Int      @default(1)
+  condition         String   @default("NM")
+  costBasis         Float // per-unit acquisition cost
+  acquiredAt        DateTime @default(now())
+  location          String? // storage location, e.g. "Binder A / page 3"
+  tags              String   @default("") // comma-separated user tags
+  status            String   @default("owned") // "owned" | "listed" | "sold"
+  listedPrice       Float?
+  listedMarketplace String?
+  soldPrice         Float?
+  soldFees          Float?
+  soldAt            DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  card      Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+  @@index([cardId])
+  @@index([status])
+}
+
+model WatchlistItem {
+  id              String   @id @default(cuid())
+  userId          String
+  cardId          String
+  targetBuyPrice  Float?
+  targetSellPrice Float?
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cardId])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Alerts, proposals, notifications
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AlertRule {
+  id                    String    @id @default(cuid())
+  userId                String
+  name                  String
+  scope                 String // "card" | "watchlist" | "inventory"
+  cardId                String? // set when scope == "card"
+  trigger               String // "threshold_above" | "threshold_below" | "pct_move" | "spread" | "new_low"
+  // JSON (String): { threshold?, windowHours?, direction?, spreadPct?, marketplaceA?, marketplaceB?, lookbackDays? }
+  params                String    @default("{}")
+  action                String    @default("propose_trade") // "notify" | "propose_trade"
+  proposeSide           String    @default("auto") // "buy" | "sell" | "auto"
+  quantity              Int       @default(1)
+  marketplace           String? // preferred marketplace for the proposal
+  cooldownMinutes       Int       @default(360)
+  proposalExpiryMinutes Int       @default(30)
+  quietHoursRespected   Boolean   @default(true)
+  enabled               Boolean   @default(true)
+  lastFiredAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card      Card?           @relation(fields: [cardId], references: [id], onDelete: SetNull)
+  proposals TradeProposal[]
+
+  @@index([userId])
+  @@index([enabled])
+}
+
+model TradeProposal {
+  id            String   @id @default(cuid())
+  userId        String
+  cardId        String
+  ruleId        String?
+  side          String // "buy" | "sell"
+  quantity      Int      @default(1)
+  proposedPrice Float // per unit
+  marketplace   String
+  deepLink      String
+  executionMode String   @default("deeplink") // "deeplink" | "api"
+  rationale     String // human-readable "why this fired"
+  // JSON (String): snapshot of the price evidence at fire time
+  priceSnapshot String   @default("{}")
+  netAfterFees  Float // fee-adjusted net proceeds (sell) or est. exit spread basis (buy)
+  costBasis     Float?
+  status        String   @default("pending") // pending | approved | declined | expired | executed
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  decidedAt     DateTime?
+  executedAt    DateTime?
+  undoUntil     DateTime? // 5-second undo window after a decision
+  // Hindsight, filled when a pending proposal expires:
+  outcomePrice  Float?
+  outcomeNote   String?
+
+  user User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  card Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  rule AlertRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+
+  notifications NotificationLog[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+}
+
+model NotificationLog {
+  id          String    @id @default(cuid())
+  userId      String
+  proposalId  String?
+  ruleId      String?
+  kind        String    @default("proposal") // "proposal" | "info" | "expiry" | "hindsight"
+  channel     String // "webpush" | "console" | "email"
+  title       String
+  body        String
+  deepLink    String?
+  sentAt      DateTime  @default(now())
+  deliveredAt DateTime?
+  actedOn     Boolean   @default(false)
+  actedAt     DateTime?
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  proposal TradeProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+
+  @@index([userId, sentAt])
+}

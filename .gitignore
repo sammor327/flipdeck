@@ -1,0 +1,43 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+next-env.d.ts.timestamp
+
+# production
+/build
+
+# database (SQLite dev db + Prisma journal)
+/prisma/dev.db
+/prisma/dev.db-journal
+*.db
+*.db-journal
+
+# testing
+/coverage
+
+# misc
+.DS_Store
+*.pem
+.vscode/*
+!.vscode/extensions.json
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env — NOTE: we intentionally commit `.env` (dev-only, no real secrets)
+# so the demo runs after clone. Put real secrets in `.env.local` (ignored).
+.env.local
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
