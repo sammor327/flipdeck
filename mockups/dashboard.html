@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlipDeck — Dashboard</title>
+<style>
+  :root{
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#222220;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+    --accent:#3987e5; --good:#0ca30c; --bad:#d03b3b; --warn:#fab219;
+    --g-mtg:#3987e5; --g-rift:#199e70; --g-ygo:#c98500; --g-pkm:#008300; --g-lor:#9085e9;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+  a{color:inherit;text-decoration:none}
+  .app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+
+  /* ── Sidebar ─────────────────────────── */
+  .side{background:var(--surface);border-right:1px solid var(--border);padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+  .logo{font-size:18px;font-weight:700;padding:4px 12px 18px;letter-spacing:.2px}
+  .logo span{color:var(--accent)}
+  .nav{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--ink-2);font-weight:500}
+  .nav:hover{background:var(--surface-2)}
+  .nav.on{background:var(--surface-2);color:var(--ink)}
+  .nav .ic{width:18px;text-align:center;opacity:.85}
+  .nav .pill{margin-left:auto;background:var(--warn);color:#0b0b0b;font-size:11px;font-weight:700;border-radius:9px;padding:1px 7px}
+  .side .foot{margin-top:auto;padding:12px;color:var(--muted);font-size:12px;border-top:1px solid var(--border)}
+
+  /* ── Main ────────────────────────────── */
+  .main{padding:24px 28px;max-width:1200px}
+  .topbar{display:flex;align-items:center;gap:16px;margin-bottom:22px}
+  .search{flex:1;max-width:420px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 14px;color:var(--muted)}
+  .avatar{width:32px;height:32px;border-radius:50%;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;font-size:12px;font-weight:700;color:var(--ink-2)}
+  h1{font-size:20px;margin-bottom:4px}
+  .sub{color:var(--muted);margin-bottom:20px}
+
+  /* ── Stat tiles ──────────────────────── */
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .tile .lbl{color:var(--muted);font-size:12px;margin-bottom:6px}
+  .tile .val{font-size:26px;font-weight:600}
+  .tile .val.hero{font-size:34px}
+  .tile .delta{font-size:12.5px;margin-top:4px;font-weight:600}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .tile .vs{color:var(--muted);font-weight:400}
+  .tile svg{margin-top:8px;display:block}
+
+  /* ── Panels ──────────────────────────── */
+  .cols{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;align-items:start}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .panel h2{font-size:14px;font-weight:600;margin-bottom:2px}
+  .panel .hint{color:var(--muted);font-size:12px;margin-bottom:12px}
+  .phead{display:flex;align-items:baseline;justify-content:space-between}
+  .ranges{display:flex;gap:4px}
+  .range{border:1px solid var(--border);background:transparent;color:var(--ink-2);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .range.on{background:var(--surface-2);color:var(--ink);font-weight:600}
+  .chartwrap{position:relative}
+  .tip{position:absolute;pointer-events:none;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:12px;display:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+  .tip b{display:block;font-size:13px}
+
+  /* ── Movers table ────────────────────── */
+  table{width:100%;border-collapse:collapse}
+  th{color:var(--muted);font-size:11.5px;font-weight:500;text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.4px}
+  td{padding:10px;border-bottom:1px solid var(--grid);vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface-2)}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  th.num{text-align:right}
+  .cname{font-weight:600}
+  .cset{color:var(--muted);font-size:12px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+  .dot{width:8px;height:8px;border-radius:50%}
+  .btn{border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.good{background:var(--good);border-color:var(--good);color:#fff}
+  .btn.ghost{background:transparent}
+  .btn.sm{padding:5px 10px;font-size:12px}
+
+  /* ── Approvals ───────────────────────── */
+  .apr{border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;background:var(--surface-2)}
+  .apr .row1{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:2px}
+  .side-tag{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:6px;padding:2px 8px}
+  .side-sell{background:rgba(12,163,12,.18);color:var(--good)}
+  .side-buy{background:rgba(57,135,229,.18);color:var(--accent)}
+  .apr .why{color:var(--muted);font-size:12px;margin:6px 0 10px}
+  .apr .net{font-size:13px;margin-bottom:10px}
+  .apr .acts{display:flex;gap:8px;align-items:center}
+  .expire{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .meter{height:3px;border-radius:2px;background:var(--baseline);margin-top:10px;overflow:hidden}
+  .meter i{display:block;height:100%;background:var(--warn)}
+  @media (max-width:980px){.app{grid-template-columns:1fr}.side{display:none}.tiles{grid-template-columns:1fr 1fr}.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo">Flip<span>Deck</span></div>
+    <a class="nav on"><span class="ic">◧</span> Dashboard</a>
+    <a class="nav"><span class="ic">▤</span> Inventory</a>
+    <a class="nav"><span class="ic">☆</span> Watchlist</a>
+    <a class="nav"><span class="ic">⚡</span> Alerts &amp; Approvals <span class="pill">3</span></a>
+    <a class="nav"><span class="ic">⇄</span> Spread Scanner</a>
+    <a class="nav"><span class="ic">⚙</span> Settings</a>
+    <div class="foot">Prices refreshed 42s ago<br>Fast lane: 5 min · 31 cards</div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div class="search">Search any card across 5 games…&nbsp; ⌘K</div>
+      <div class="avatar">SM</div>
+    </div>
+
+    <h1>Good morning, Sam</h1>
+    <div class="sub">Your portfolio moved <b class="up">▲ +$412.18</b> in the last 7 days. 3 approvals are waiting.</div>
+
+    <!-- Stat tiles -->
+    <div class="tiles">
+      <div class="tile">
+        <div class="lbl">Portfolio value</div>
+        <div class="val hero">$12,847</div>
+        <div class="delta up">▲ +$412.18 (+3.3%) <span class="vs">vs last week</span></div>
+        <svg width="150" height="30" viewBox="0 0 150 30" aria-label="Portfolio 12-week trend">
+          <polyline points="0,24 13,22 26,25 39,20 52,21 65,16 78,18 91,13 104,15 117,10 130,12 143,6"
+                    fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="143" cy="6" r="4" fill="#3987e5" stroke="#1a1a19" stroke-width="2"/>
+        </svg>
+      </div>
+      <div class="tile">
+        <div class="lbl">Unrealized P/L</div>
+        <div class="val up">+$2,184</div>
+        <div class="delta"><span class="vs">across 214 cards · cost basis $10,663</span></div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Active alert rules</div>
+        <div class="val">14</div>
+        <div class="delta"><span class="vs">fired 9 times this week · 4 acted on</span></div>
+      </div>
+      <div class="tile">
+        <div class="lbl">Pending approvals</div>
+        <div class="val">3</div>
+        <div class="delta down">soonest expires in 12:41</div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <!-- Portfolio chart -->
+      <div class="panel">
+        <div class="phead">
+          <div>
+            <h2>Portfolio value — last 30 days</h2>
+            <div class="hint">Marked to market hourly from your default marketplaces</div>
+          </div>
+          <div class="ranges">
+            <button class="range">1W</button><button class="range on">1M</button>
+            <button class="range">3M</button><button class="range">1Y</button>
+          </div>
+        </div>
+        <div class="chartwrap">
+          <svg id="pv" width="100%" viewBox="0 0 680 220" aria-label="Portfolio value line chart, last 30 days">
+            <!-- gridlines -->
+            <g stroke="#2c2c2a" stroke-width="1">
+              <line x1="44" y1="20"  x2="672" y2="20"/><line x1="44" y1="70" x2="672" y2="70"/>
+              <line x1="44" y1="120" x2="672" y2="120"/><line x1="44" y1="170" x2="672" y2="170"/>
+            </g>
+            <line x1="44" y1="192" x2="672" y2="192" stroke="#383835" stroke-width="1"/>
+            <g fill="#898781" font-size="11" font-variant="tabular-nums">
+              <text x="38" y="24" text-anchor="end">$13k</text>
+              <text x="38" y="74" text-anchor="end">$12.5k</text>
+              <text x="38" y="124" text-anchor="end">$12k</text>
+              <text x="38" y="174" text-anchor="end">$11.5k</text>
+              <text x="44" y="210">Jun 7</text><text x="340" y="210" text-anchor="middle">Jun 22</text>
+              <text x="672" y="210" text-anchor="end">Jul 7</text>
+            </g>
+            <path d="M44,158 L88,150 L132,161 L176,140 L220,146 L264,128 L308,134 L352,110 L396,118 L440,96
+                     L484,104 L528,84 L572,90 L616,60 L660,38 L660,192 L44,192 Z"
+                  fill="#3987e5" opacity=".10"/>
+            <path d="M44,158 L88,150 L132,161 L176,140 L220,146 L264,128 L308,134 L352,110 L396,118 L440,96
+                     L484,104 L528,84 L572,90 L616,60 L660,38"
+                  fill="none" stroke="#3987e5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            <line id="xh" x1="0" y1="20" x2="0" y2="192" stroke="#898781" stroke-width="1" style="display:none"/>
+            <circle id="hdot" r="4" fill="#3987e5" stroke="#1a1a19" stroke-width="2" style="display:none"/>
+            <circle cx="660" cy="38" r="4" fill="#3987e5" stroke="#1a1a19" stroke-width="2"/>
+            <text x="654" y="30" fill="#c3c2b7" font-size="12" font-weight="600" text-anchor="end">$12,847</text>
+          </svg>
+          <div class="tip" id="tip"><b>$12,410</b><span style="color:var(--muted)">Jun 24 · ▲ +1.2% day</span></div>
+        </div>
+      </div>
+
+      <!-- Pending approvals -->
+      <div class="panel">
+        <h2>Pending approvals</h2>
+        <div class="hint">One tap. 5-second undo. Proposals expire as prices move.</div>
+
+        <div class="apr">
+          <div class="row1"><b>Ragavan, Nimble Pilferer</b> <span class="side-tag side-sell">SELL 1</span></div>
+          <div class="chip"><span class="dot" style="background:var(--g-mtg)"></span>Magic · MH2 · NM</div>
+          <div class="why">Rule “Sell into spikes” — up ▲ +18.4% in 24h on TCGplayer, above your $68 target.</div>
+          <div class="net">Proposed <b>$71.50</b> → net after fees <b class="up">+$63.86</b> <span style="color:var(--muted)">(cost basis $41.00)</span></div>
+          <div class="acts">
+            <button class="btn good sm">Approve</button>
+            <button class="btn ghost sm">Decline</button>
+            <span class="expire">expires 12:41</span>
+          </div>
+          <div class="meter"><i style="width:42%"></i></div>
+        </div>
+
+        <div class="apr">
+          <div class="row1"><b>Elsa — Spirit of Winter</b> <span class="side-tag side-buy">BUY 2</span></div>
+          <div class="chip"><span class="dot" style="background:var(--g-lor)"></span>Lorcana · TFC · NM</div>
+          <div class="why">Rule “Dip buyer” — down ▼ −16.2% in 48h, lowest listing in 90 days.</div>
+          <div class="net">Proposed <b>$38.20 ×2</b> → est. resale spread <b class="up">+14.8%</b> after fees</div>
+          <div class="acts">
+            <button class="btn good sm">Approve</button>
+            <button class="btn ghost sm">Decline</button>
+            <span class="expire">expires 24:03</span>
+          </div>
+          <div class="meter"><i style="width:78%"></i></div>
+        </div>
+
+        <a class="nav" style="justify-content:center;color:var(--accent);font-size:13px">View all 3 approvals →</a>
+      </div>
+    </div>
+
+    <!-- Top movers -->
+    <div class="panel" style="margin-top:14px">
+      <div class="phead">
+        <div>
+          <h2>Top movers — your tracked cards</h2>
+          <div class="hint">Across watchlist + inventory · last 24 hours</div>
+        </div>
+        <button class="btn ghost sm">Open spread scanner ⇄</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Card</th><th>Game</th><th class="num">Price</th><th class="num">24h</th>
+          <th style="text-align:center">7d trend</th><th class="num">Spread*</th><th></th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td><div class="cname">Ragavan, Nimble Pilferer</div><div class="cset">Modern Horizons 2 · Mythic</div></td>
+            <td><span class="chip"><span class="dot" style="background:var(--g-mtg)"></span>Magic</span></td>
+            <td class="num">$71.50</td><td class="num up">▲ +18.4%</td>
+            <td style="text-align:center"><svg width="110" height="26" viewBox="0 0 110 26"><polyline points="0,20 15,19 30,21 45,17 60,16 75,14 90,9 105,4" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round"/><circle cx="105" cy="4" r="3.5" fill="#0ca30c" stroke="#1a1a19" stroke-width="2"/></svg></td>
+            <td class="num up">+9.1%</td>
+            <td class="num"><button class="btn sm pri">Sell</button></td>
+          </tr>
+          <tr>
+            <td><div class="cname">Jinx, Loose Cannon (Showcase)</div><div class="cset">Riftbound: Origins · Epic</div></td>
+            <td><span class="chip"><span class="dot" style="background:var(--g-rift)"></span>Riftbound</span></td>
+            <td class="num">$24.10</td><td class="num up">▲ +11.7%</td>
+            <td style="text-align:center"><svg width="110" height="26" viewBox="0 0 110 26"><polyline points="0,18 15,20 30,16 45,18 60,12 75,13 90,8 105,6" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round"/><circle cx="105" cy="6" r="3.5" fill="#0ca30c" stroke="#1a1a19" stroke-width="2"/></svg></td>
+            <td class="num up">+6.3%</td>
+            <td class="num"><button class="btn sm ghost">Watch</button></td>
+          </tr>
+          <tr>
+            <td><div class="cname">Charizard ex (SAR)</div><div class="cset">Obsidian Flames · Special Art</div></td>
+            <td><span class="chip"><span class="dot" style="background:var(--g-pkm)"></span>Pokémon</span></td>
+            <td class="num">$182.00</td><td class="num down">▼ −7.9%</td>
+            <td style="text-align:center"><svg width="110" height="26" viewBox="0 0 110 26"><polyline points="0,7 15,6 30,9 45,8 60,12 75,11 90,16 105,20" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round"/><circle cx="105" cy="20" r="3.5" fill="#d03b3b" stroke="#1a1a19" stroke-width="2"/></svg></td>
+            <td class="num">+2.0%</td>
+            <td class="num"><button class="btn sm good">Buy dip</button></td>
+          </tr>
+          <tr>
+            <td><div class="cname">Ash Blossom &amp; Joyous Spring</div><div class="cset">Quarter Century (25th) · Secret</div></td>
+            <td><span class="chip"><span class="dot" style="background:var(--g-ygo)"></span>Yu-Gi-Oh!</span></td>
+            <td class="num">$47.35</td><td class="num up">▲ +5.2%</td>
+            <td style="text-align:center"><svg width="110" height="26" viewBox="0 0 110 26"><polyline points="0,16 15,17 30,15 45,13 60,14 75,12 90,11 105,9" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round"/><circle cx="105" cy="9" r="3.5" fill="#0ca30c" stroke="#1a1a19" stroke-width="2"/></svg></td>
+            <td class="num up">+11.4%</td>
+            <td class="num"><button class="btn sm pri">Sell</button></td>
+          </tr>
+          <tr>
+            <td><div class="cname">Elsa — Spirit of Winter</div><div class="cset">The First Chapter · Legendary</div></td>
+            <td><span class="chip"><span class="dot" style="background:var(--g-lor)"></span>Lorcana</span></td>
+            <td class="num">$38.20</td><td class="num down">▼ −16.2%</td>
+            <td style="text-align:center"><svg width="110" height="26" viewBox="0 0 110 26"><polyline points="0,6 15,8 30,7 45,10 60,9 75,13 90,17 105,21" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round"/><circle cx="105" cy="21" r="3.5" fill="#d03b3b" stroke="#1a1a19" stroke-width="2"/></svg></td>
+            <td class="num up">+14.8%</td>
+            <td class="num"><button class="btn sm good">Buy dip</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="hint" style="margin-top:10px">*Spread = best cross-marketplace buy→sell gap after your fee profile. Hover any row for details; full math on the card page.</div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // Crosshair + tooltip for the portfolio chart (nearest-point snap)
+  const pts=[[44,158,'Jun 7','$11,930'],[88,150,'Jun 9','$12,010'],[132,161,'Jun 11','$11,900'],
+    [176,140,'Jun 13','$12,110'],[220,146,'Jun 15','$12,050'],[264,128,'Jun 17','$12,230'],
+    [308,134,'Jun 19','$12,170'],[352,110,'Jun 21','$12,410'],[396,118,'Jun 23','$12,330'],
+    [440,96,'Jun 25','$12,550'],[484,104,'Jun 27','$12,470'],[528,84,'Jun 29','$12,670'],
+    [572,90,'Jul 1','$12,610'],[616,60,'Jul 4','$12,760'],[660,38,'Jul 7','$12,847']];
+  const svg=document.getElementById('pv'),tip=document.getElementById('tip'),
+        xh=document.getElementById('xh'),hd=document.getElementById('hdot');
+  svg.addEventListener('mousemove',e=>{
+    const r=svg.getBoundingClientRect(),sx=680/r.width,mx=(e.clientX-r.left)*sx;
+    let p=pts[0];for(const q of pts)if(Math.abs(q[0]-mx)<Math.abs(p[0]-mx))p=q;
+    xh.setAttribute('x1',p[0]);xh.setAttribute('x2',p[0]);xh.style.display='block';
+    hd.setAttribute('cx',p[0]);hd.setAttribute('cy',p[1]);hd.style.display='block';
+    tip.innerHTML='<b>'+p[3]+'</b><span style="color:#898781">'+p[2]+'</span>';
+    tip.style.display='block';
+    tip.style.left=Math.min(p[0]/sx+14,r.width-120)+'px';
+    tip.style.top=(p[1]*(r.height/220)-46)+'px';
+  });
+  svg.addEventListener('mouseleave',()=>{tip.style.display='none';xh.style.display='none';hd.style.display='none';});
+</script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlipDeck — Card Detail</title>
+<style>
+  :root{
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#222220;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+    --accent:#3987e5; --good:#0ca30c; --bad:#d03b3b; --warn:#fab219;
+    --g-mtg:#3987e5;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+  a{color:inherit;text-decoration:none}
+  .app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+  .side{background:var(--surface);border-right:1px solid var(--border);padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+  .logo{font-size:18px;font-weight:700;padding:4px 12px 18px}
+  .logo span{color:var(--accent)}
+  .nav{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--ink-2);font-weight:500}
+  .nav:hover{background:var(--surface-2)} .nav.on{background:var(--surface-2);color:var(--ink)}
+  .nav .ic{width:18px;text-align:center;opacity:.85}
+  .nav .pill{margin-left:auto;background:var(--warn);color:#0b0b0b;font-size:11px;font-weight:700;border-radius:9px;padding:1px 7px}
+  .main{padding:24px 28px;max-width:1200px}
+  .crumb{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .crumb b{color:var(--ink-2)}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .btn{border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:9px 16px;font-size:13.5px;font-weight:600;cursor:pointer}
+  .btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.good{background:var(--good);border-color:var(--good);color:#fff}
+  .btn.ghost{background:transparent} .btn.sm{padding:5px 10px;font-size:12px}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .panel h2{font-size:14px;font-weight:600;margin-bottom:2px}
+  .hint{color:var(--muted);font-size:12px;margin-bottom:12px}
+
+  /* Header layout */
+  .hero{display:grid;grid-template-columns:190px 1fr 300px;gap:18px;margin-bottom:14px;align-items:start}
+  .cardimg{aspect-ratio:63/88;border-radius:10px;border:1px solid var(--border);
+    background:linear-gradient(160deg,#2a2a28 0%,#1f1f1e 60%,#242422 100%);
+    display:grid;place-items:center;color:var(--muted);font-size:12px;text-align:center;padding:10px}
+  .title h1{font-size:22px;margin-bottom:2px}
+  .meta{color:var(--muted);font-size:13px;margin-bottom:12px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2);border:1px solid var(--border);border-radius:14px;padding:3px 10px;margin-right:6px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--g-mtg)}
+  .bigprice{font-size:36px;font-weight:600;margin-top:14px}
+  .bigprice small{font-size:14px;color:var(--muted);font-weight:400}
+  .delta{font-weight:600;font-size:14px;margin-top:2px}
+  .actions{display:flex;gap:8px;margin-top:16px}
+
+  /* Spread card */
+  .spread{background:var(--surface);border:1px solid rgba(12,163,12,.45);border-radius:12px;padding:16px}
+  .spread .tag{font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--good);margin-bottom:8px}
+  .sline{display:flex;justify-content:space-between;padding:5px 0;font-size:13px;color:var(--ink-2)}
+  .sline b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .sline.total{border-top:1px solid var(--border);margin-top:6px;padding-top:10px;font-size:14px}
+  .cols{display:grid;grid-template-columns:1.7fr 1fr;gap:14px;align-items:start;margin-bottom:14px}
+  .ranges{display:flex;gap:4px}
+  .range{border:1px solid var(--border);background:transparent;color:var(--ink-2);border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer}
+  .range.on{background:var(--surface-2);color:var(--ink);font-weight:600}
+  .phead{display:flex;align-items:baseline;justify-content:space-between}
+
+  table{width:100%;border-collapse:collapse}
+  th{color:var(--muted);font-size:11.5px;font-weight:500;text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.4px}
+  td{padding:9px 10px;border-bottom:1px solid var(--grid)}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right;font-variant-numeric:tabular-nums} th.num{text-align:right}
+  .src{font-weight:600}
+  .note{color:var(--muted);font-size:12px}
+
+  /* Rule builder */
+  .form label{display:block;color:var(--muted);font-size:12px;margin:12px 0 4px}
+  .form select,.form input{width:100%;background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px}
+  .inline{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .toggle{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--ink-2)}
+  .tk{width:34px;height:19px;border-radius:10px;background:var(--good);position:relative}
+  .tk::after{content:"";position:absolute;right:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff}
+  .evt{fill:#898781}
+  @media (max-width:980px){.app{grid-template-columns:1fr}.side{display:none}.hero{grid-template-columns:1fr}.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo">Flip<span>Deck</span></div>
+    <a class="nav"><span class="ic">◧</span> Dashboard</a>
+    <a class="nav on"><span class="ic">▤</span> Inventory</a>
+    <a class="nav"><span class="ic">☆</span> Watchlist</a>
+    <a class="nav"><span class="ic">⚡</span> Alerts &amp; Approvals <span class="pill">3</span></a>
+    <a class="nav"><span class="ic">⇄</span> Spread Scanner</a>
+    <a class="nav"><span class="ic">⚙</span> Settings</a>
+  </aside>
+
+  <main class="main">
+    <div class="crumb">Inventory / Magic: The Gathering / <b>Ragavan, Nimble Pilferer</b></div>
+
+    <div class="hero">
+      <div class="cardimg">Card image<br>(Scryfall CDN)<br>630 × 880</div>
+
+      <div class="title">
+        <h1>Ragavan, Nimble Pilferer</h1>
+        <div class="meta">Modern Horizons 2 · Mythic Rare · #138 · Non-foil · English</div>
+        <span class="chip"><span class="dot"></span>Magic</span>
+        <span class="chip">You own 1 · NM</span>
+        <span class="chip">Cost basis $41.00</span>
+        <div class="bigprice">$71.50 <small>TCGplayer Market · NM · 2 min ago</small></div>
+        <div class="delta up">▲ +18.4% (24h) &nbsp;·&nbsp; ▲ +31.2% (7d) &nbsp;·&nbsp; <span class="note">liquidity: high (214 listings, ~9 sales/day)</span></div>
+        <div class="actions">
+          <button class="btn pri">Sell mine — est. net $63.86</button>
+          <button class="btn good">Buy more</button>
+          <button class="btn ghost">+ Alert rule</button>
+          <button class="btn ghost">☆ Watch</button>
+        </div>
+      </div>
+
+      <div class="spread">
+        <div class="tag">BEST SPREAD RIGHT NOW</div>
+        <div class="sline"><span>Buy — Cardmarket (DE), NM</span><b>$61.40</b></div>
+        <div class="sline"><span>Sell — TCGplayer, NM</span><b>$71.50</b></div>
+        <div class="sline"><span>Fees + shipping (your profile)</span><b>−$8.92</b></div>
+        <div class="sline total"><span><b>Net per copy</b></span><b class="up">+$1.18 (+1.9%)</b></div>
+        <div class="note" style="margin-top:8px">Thin — below your 8% floor. Best recent window: Jul 2, +11.4%. <a href="#" style="color:var(--accent)">Alert me when spread &gt; 8% →</a></div>
+      </div>
+    </div>
+
+    <div class="cols">
+      <!-- Price history -->
+      <div class="panel">
+        <div class="phead">
+          <div>
+            <h2>Price history — NM, TCGplayer Market</h2>
+            <div class="hint">Event markers: ● ban list, reprint &amp; tournament annotations</div>
+          </div>
+          <div class="ranges">
+            <button class="range">1W</button><button class="range on">1M</button>
+            <button class="range">3M</button><button class="range">1Y</button>
+          </div>
+        </div>
+        <svg width="100%" viewBox="0 0 640 210" aria-label="Ragavan price history line chart, last month">
+          <g stroke="#2c2c2a" stroke-width="1">
+            <line x1="44" y1="18" x2="632" y2="18"/><line x1="44" y1="66" x2="632" y2="66"/>
+            <line x1="44" y1="114" x2="632" y2="114"/><line x1="44" y1="162" x2="632" y2="162"/>
+          </g>
+          <line x1="44" y1="184" x2="632" y2="184" stroke="#383835" stroke-width="1"/>
+          <g fill="#898781" font-size="11">
+            <text x="38" y="22" text-anchor="end">$75</text><text x="38" y="70" text-anchor="end">$65</text>
+            <text x="38" y="118" text-anchor="end">$55</text><text x="38" y="166" text-anchor="end">$45</text>
+            <text x="44" y="202">Jun 7</text><text x="338" y="202" text-anchor="middle">Jun 22</text>
+            <text x="632" y="202" text-anchor="end">Jul 7</text>
+          </g>
+          <path d="M44,150 L86,146 L128,152 L170,143 L212,148 L254,138 L296,132 L338,136 L380,120 L422,114
+                   L464,118 L506,96 L548,88 L590,62 L632,34 L632,184 L44,184 Z" fill="#3987e5" opacity=".10"/>
+          <path d="M44,150 L86,146 L128,152 L170,143 L212,148 L254,138 L296,132 L338,136 L380,120 L422,114
+                   L464,118 L506,96 L548,88 L590,62 L632,34"
+                fill="none" stroke="#3987e5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- event marker -->
+          <line x1="506" y1="18" x2="506" y2="184" stroke="#898781" stroke-width="1" stroke-opacity=".55"/>
+          <text x="506" y="12" text-anchor="middle" class="evt" font-size="10.5">Pro Tour result · Jun 29</text>
+          <circle cx="632" cy="34" r="4" fill="#3987e5" stroke="#1a1a19" stroke-width="2"/>
+          <text x="626" y="26" fill="#c3c2b7" font-size="12" font-weight="600" text-anchor="end">$71.50</text>
+        </svg>
+      </div>
+
+      <!-- Rule builder -->
+      <div class="panel form">
+        <h2>Alert rule for this card</h2>
+        <div class="hint">Fires a push notification; can also propose a one-tap trade.</div>
+        <label>When</label>
+        <select><option>Price rises above…</option><option>Price falls below…</option><option>% move within window…</option><option>Cross-market spread exceeds…</option><option>New 90-day low</option></select>
+        <div class="inline">
+          <div><label>Threshold</label><input value="$75.00"></div>
+          <div><label>Window</label><select><option>24 hours</option><option>48 hours</option><option>7 days</option></select></div>
+        </div>
+        <label>Then</label>
+        <select><option>Notify + propose SELL (one-tap approve)</option><option>Notify only</option><option>Notify + propose BUY</option></select>
+        <div class="inline">
+          <div><label>Proposal expiry</label><select><option>30 minutes</option><option>10 minutes</option><option>2 hours</option></select></div>
+          <div><label>Cooldown</label><select><option>6 hours</option><option>1 hour</option><option>24 hours</option></select></div>
+        </div>
+        <div class="toggle"><span class="tk"></span> Quiet hours respected (10pm–7am)</div>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn pri" style="flex:1">Create rule</button>
+          <button class="btn ghost">Backtest</button>
+        </div>
+        <div class="note" style="margin-top:10px">Backtest preview: would have fired <b>3×</b> in the last 90 days; best outcome +$9.20/copy.</div>
+      </div>
+    </div>
+
+    <!-- Marketplace comparison -->
+    <div class="panel">
+      <h2>Marketplace prices — NM unless noted</h2>
+      <div class="hint">Listing price is the ask; sold price is the truth. Net = after your fee &amp; shipping profile.</div>
+      <table>
+        <thead><tr>
+          <th>Marketplace</th><th class="num">Lowest listing</th><th class="num">Market / trend price</th>
+          <th class="num">Last sold (avg 7d)</th><th class="num">Listings</th><th class="num">Your net if sold</th><th></th>
+        </tr></thead>
+        <tbody>
+          <tr>
+            <td class="src">TCGplayer</td><td class="num">$69.99</td><td class="num">$71.50</td>
+            <td class="num">$70.80</td><td class="num">214</td><td class="num up">$63.86</td>
+            <td class="num"><button class="btn sm pri">List here</button></td>
+          </tr>
+          <tr>
+            <td class="src">Cardmarket <span class="note">(EUR→USD)</span></td><td class="num">$61.40</td><td class="num">$64.10</td>
+            <td class="num">$63.55</td><td class="num">327</td><td class="num">$55.02</td>
+            <td class="num"><button class="btn sm ghost">View</button></td>
+          </tr>
+          <tr>
+            <td class="src">eBay <span class="note">(sold comps)</span></td><td class="num">—</td><td class="num">—</td>
+            <td class="num">$72.40</td><td class="num">38 sold/30d</td><td class="num">$60.13</td>
+            <td class="num"><button class="btn sm ghost">View</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</div>
+</body>
+</html>

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlipDeck — Alerts &amp; Approvals</title>
+<style>
+  :root{
+    --page:#0d0d0d; --surface:#1a1a19; --surface-2:#222220;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+    --accent:#3987e5; --good:#0ca30c; --bad:#d03b3b; --warn:#fab219;
+    --g-mtg:#3987e5; --g-rift:#199e70; --g-ygo:#c98500; --g-pkm:#008300; --g-lor:#9085e9;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+  a{color:inherit;text-decoration:none}
+  .app{display:grid;grid-template-columns:216px 1fr;min-height:100vh}
+  .side{background:var(--surface);border-right:1px solid var(--border);padding:20px 12px;display:flex;flex-direction:column;gap:4px}
+  .logo{font-size:18px;font-weight:700;padding:4px 12px 18px}
+  .logo span{color:var(--accent)}
+  .nav{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;color:var(--ink-2);font-weight:500}
+  .nav:hover{background:var(--surface-2)} .nav.on{background:var(--surface-2);color:var(--ink)}
+  .nav .ic{width:18px;text-align:center;opacity:.85}
+  .nav .pill{margin-left:auto;background:var(--warn);color:#0b0b0b;font-size:11px;font-weight:700;border-radius:9px;padding:1px 7px}
+  .main{padding:24px 28px;max-width:1200px}
+  h1{font-size:20px}
+  .sub{color:var(--muted);margin:4px 0 16px}
+  .up{color:var(--good)} .down{color:var(--bad)}
+  .btn{border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn.good{background:var(--good);border-color:var(--good);color:#fff}
+  .btn.ghost{background:transparent} .btn.sm{padding:6px 12px;font-size:12.5px}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px}
+  .tab{padding:9px 16px;color:var(--muted);font-weight:600;font-size:13.5px;border-bottom:2px solid transparent;cursor:pointer}
+  .tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .tab .n{background:var(--surface-2);border-radius:9px;padding:1px 7px;font-size:11px;margin-left:5px}
+  .cols{display:grid;grid-template-columns:1.5fr 1fr;gap:14px;align-items:start}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px}
+  .panel h2{font-size:14px;font-weight:600;margin-bottom:2px}
+  .hint{color:var(--muted);font-size:12px;margin-bottom:14px}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-2)}
+  .dot{width:8px;height:8px;border-radius:50%}
+
+  /* Approval cards */
+  .apr{border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px;background:var(--surface-2)}
+  .apr.hot{border-color:rgba(250,178,25,.5)}
+  .row1{display:flex;justify-content:space-between;align-items:baseline}
+  .row1 b{font-size:15px}
+  .side-tag{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:6px;padding:2px 8px}
+  .side-sell{background:rgba(12,163,12,.18);color:var(--good)}
+  .side-buy{background:rgba(57,135,229,.18);color:var(--accent)}
+  .why{color:var(--muted);font-size:12.5px;margin:7px 0 10px}
+  .evidence{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
+  .ev{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+  .ev .l{color:var(--muted);font-size:11px}
+  .ev .v{font-size:14px;font-weight:600;margin-top:1px;font-variant-numeric:tabular-nums}
+  .acts{display:flex;gap:8px;align-items:center}
+  .expire{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+  .meter{height:3px;border-radius:2px;background:var(--baseline);margin-top:12px;overflow:hidden}
+  .meter i{display:block;height:100%;background:var(--warn)}
+  .undo{background:rgba(12,163,12,.12);border:1px solid rgba(12,163,12,.4);border-radius:12px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px}
+
+  /* Feed */
+  .feed{list-style:none}
+  .feed li{display:flex;gap:12px;padding:11px 0;border-bottom:1px solid var(--grid)}
+  .feed li:last-child{border-bottom:none}
+  .fic{width:30px;height:30px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;font-size:13px;flex:none}
+  .ft{font-size:13px}
+  .ft .t{color:var(--muted);font-size:11.5px;margin-top:2px}
+  .hind{color:var(--muted);font-size:12px;font-style:italic}
+
+  /* Rules strip */
+  .rule{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--grid);font-size:13px}
+  .rule:last-child{border-bottom:none}
+  .rule .name{font-weight:600}
+  .rule .desc{color:var(--muted);font-size:12px}
+  .rule .stat{margin-left:auto;color:var(--muted);font-size:12px;text-align:right;white-space:nowrap;flex:none}
+  .tk{width:34px;height:19px;border-radius:10px;background:var(--good);position:relative;flex:none}
+  .tk::after{content:"";position:absolute;right:2px;top:2px;width:15px;height:15px;border-radius:50%;background:#fff}
+  .tk.off{background:var(--baseline)}
+  .tk.off::after{right:auto;left:2px}
+  @media (max-width:980px){.app{grid-template-columns:1fr}.side{display:none}.cols{grid-template-columns:1fr}.evidence{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="logo">Flip<span>Deck</span></div>
+    <a class="nav"><span class="ic">◧</span> Dashboard</a>
+    <a class="nav"><span class="ic">▤</span> Inventory</a>
+    <a class="nav"><span class="ic">☆</span> Watchlist</a>
+    <a class="nav on"><span class="ic">⚡</span> Alerts &amp; Approvals <span class="pill">3</span></a>
+    <a class="nav"><span class="ic">⇄</span> Spread Scanner</a>
+    <a class="nav"><span class="ic">⚙</span> Settings</a>
+  </aside>
+
+  <main class="main">
+    <h1>Alerts &amp; Approvals</h1>
+    <div class="sub">Push notifications land here too — approve from your phone or this screen, whichever you reach first.</div>
+
+    <div class="tabs">
+      <span class="tab on">Approvals <span class="n">3</span></span>
+      <span class="tab">Notification feed</span>
+      <span class="tab">My rules <span class="n">14</span></span>
+      <span class="tab">History</span>
+    </div>
+
+    <div class="cols">
+      <div>
+        <!-- Undo toast -->
+        <div class="undo">
+          ✓ Approved — <b>Sell Ash Blossom ×1 at $47.35</b>. Opening TCGplayer listing…
+          <button class="btn sm ghost" style="margin-left:auto">Undo (4s)</button>
+        </div>
+
+        <!-- Approval 1 -->
+        <div class="apr hot">
+          <div class="row1"><b>Ragavan, Nimble Pilferer</b> <span class="side-tag side-sell">SELL 1</span></div>
+          <div class="chip" style="margin-top:3px"><span class="dot" style="background:var(--g-mtg)"></span>Magic · MH2 · NM · you own 1</div>
+          <div class="why">Rule <b>“Sell into spikes”</b> fired 09:41 — price up ▲ +18.4% in 24h on TCGplayer, crossing your $68.00 target. Pro Tour result Jun 29 is the likely driver.</div>
+          <div class="evidence">
+            <div class="ev"><div class="l">Proposed price</div><div class="v">$71.50</div></div>
+            <div class="ev"><div class="l">Net after fees</div><div class="v up">+$63.86</div></div>
+            <div class="ev"><div class="l">P/L vs basis</div><div class="v up">▲ +55.8%</div></div>
+          </div>
+          <div class="acts">
+            <button class="btn good">Approve — list at $71.50</button>
+            <button class="btn ghost">Decline</button>
+            <button class="btn ghost sm">Edit price</button>
+            <span class="expire">⏳ expires 12:41</span>
+          </div>
+          <div class="meter"><i style="width:42%"></i></div>
+        </div>
+
+        <!-- Approval 2 -->
+        <div class="apr">
+          <div class="row1"><b>Elsa — Spirit of Winter</b> <span class="side-tag side-buy">BUY 2</span></div>
+          <div class="chip" style="margin-top:3px"><span class="dot" style="background:var(--g-lor)"></span>Lorcana · The First Chapter · NM</div>
+          <div class="why">Rule <b>“Dip buyer”</b> fired 09:12 — down ▼ −16.2% in 48h; lowest listing in 90 days. 7-day sales velocity steady (no falling-knife signal).</div>
+          <div class="evidence">
+            <div class="ev"><div class="l">Proposed</div><div class="v">$38.20 ×2</div></div>
+            <div class="ev"><div class="l">90d median</div><div class="v">$47.90</div></div>
+            <div class="ev"><div class="l">Est. exit spread</div><div class="v up">+14.8%</div></div>
+          </div>
+          <div class="acts">
+            <button class="btn good">Approve — open checkout</button>
+            <button class="btn ghost">Decline</button>
+            <span class="expire">⏳ expires 24:03</span>
+          </div>
+          <div class="meter"><i style="width:78%"></i></div>
+        </div>
+
+        <!-- Approval 3 -->
+        <div class="apr">
+          <div class="row1"><b>Jinx, Loose Cannon (Showcase)</b> <span class="side-tag side-sell">SELL 2 of 4</span></div>
+          <div class="chip" style="margin-top:3px"><span class="dot" style="background:var(--g-rift)"></span>Riftbound · Origins · NM · beta data</div>
+          <div class="why">Rule <b>“Take profits at +40%”</b> fired 08:55 — position up ▲ +46.1% since purchase; proposal sells half, keeps half riding.</div>
+          <div class="evidence">
+            <div class="ev"><div class="l">Proposed price</div><div class="v">$24.10 ×2</div></div>
+            <div class="ev"><div class="l">Net after fees</div><div class="v up">+$42.42</div></div>
+            <div class="ev"><div class="l">Remaining position</div><div class="v">2 @ $16.50 avg</div></div>
+          </div>
+          <div class="acts">
+            <button class="btn good">Approve — list at $24.10</button>
+            <button class="btn ghost">Decline</button>
+            <span class="expire">⏳ expires 41:17</span>
+          </div>
+          <div class="meter"><i style="width:92%"></i></div>
+        </div>
+      </div>
+
+      <div>
+        <!-- Feed -->
+        <div class="panel" style="margin-bottom:14px">
+          <h2>Latest notifications</h2>
+          <div class="hint">Everything pushed to your devices, with hindsight once proposals close.</div>
+          <ul class="feed">
+            <li><span class="fic">⚡</span><div class="ft">Sell proposal created — <b>Ragavan</b> at $71.50<div class="t">09:41 · push delivered · pending</div></div></li>
+            <li><span class="fic">⚡</span><div class="ft">Buy proposal created — <b>Elsa — Spirit of Winter</b> ×2 at $38.20<div class="t">09:12 · push delivered · pending</div></div></li>
+            <li><span class="fic">✓</span><div class="ft">Approved — <b>Ash Blossom</b> sell at $47.35<div class="t">08:58 · acted in 21s from push</div></div></li>
+            <li><span class="fic">✕</span><div class="ft">Expired — <b>Charizard ex</b> buy at $178.00<div class="t">Yesterday 22:10 · quiet hours held it</div><div class="hind">Hindsight: now $182.00 — approving would have gained +$4.00 (+2.2%).</div></div></li>
+            <li><span class="fic">↓</span><div class="ft">Declined — <b>Meathook Massacre</b> sell at $46.00<div class="t">Yesterday 18:33</div><div class="hind">Hindsight: now $47.20 — declining gained +$1.20.</div></div></li>
+          </ul>
+        </div>
+
+        <!-- Rules -->
+        <div class="panel">
+          <h2>My rules</h2>
+          <div class="hint">Rule-level attribution: which rules actually make you money.</div>
+          <div class="rule">
+            <span class="tk"></span>
+            <div><div class="name">Sell into spikes</div><div class="desc">Any inventory card ▲ &gt;15% / 24h → propose sell</div></div>
+            <div class="stat">12× · 30d<br><span class="up">+$214 realized</span></div>
+          </div>
+          <div class="rule">
+            <span class="tk"></span>
+            <div><div class="name">Dip buyer</div><div class="desc">Watchlist card ▼ &gt;15% / 48h + 90d low → propose buy</div></div>
+            <div class="stat">5× · 30d<br><span class="up">+$96 unrealized</span></div>
+          </div>
+          <div class="rule">
+            <span class="tk"></span>
+            <div><div class="name">Take profits at +40%</div><div class="desc">Position P/L &gt; +40% → propose selling half</div></div>
+            <div class="stat">3× · 30d<br><span class="up">+$67 realized</span></div>
+          </div>
+          <div class="rule">
+            <span class="tk off"></span>
+            <div><div class="name">Spread hunter ≥8%</div><div class="desc">Cross-market spread after fees ≥8% → propose buy+list</div></div>
+            <div class="stat">paused<br>tune threshold?</div>
+          </div>
+          <button class="btn ghost sm" style="margin-top:12px;width:100%">+ New rule</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
