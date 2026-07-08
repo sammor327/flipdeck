@@ -2,7 +2,7 @@
 // implementation would make them shared across the web + worker processes), but
 // sufficient for a single-process dev run and for tests.
 
-import type { DirtySet, Queue, RateLimiter } from "./types";
+import type { Queue, RateLimiter } from "./types";
 
 export class MemoryRateLimiter implements RateLimiter {
   private buckets = new Map<string, { tokens: number; last: number }>();
@@ -22,24 +22,6 @@ export class MemoryRateLimiter implements RateLimiter {
     }
     this.buckets.set(key, b);
     return false;
-  }
-}
-
-export class MemoryDirtySet implements DirtySet {
-  private set = new Set<string>();
-  async add(id: string): Promise<void> {
-    this.set.add(id);
-  }
-  async addMany(ids: string[]): Promise<void> {
-    for (const id of ids) this.set.add(id);
-  }
-  async drain(): Promise<string[]> {
-    const out = [...this.set];
-    this.set.clear();
-    return out;
-  }
-  async size(): Promise<number> {
-    return this.set.size;
   }
 }
 
