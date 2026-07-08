@@ -3,6 +3,7 @@
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { dispatchNotification } from "@/lib/notifications/dispatch";
+import { isValidPushEndpoint } from "@/lib/notifications/endpoint";
 
 export interface WebPushSubscriptionJSON {
   endpoint: string;
@@ -13,6 +14,7 @@ export async function savePushSubscription(sub: WebPushSubscriptionJSON) {
   const user = await getCurrentUser();
   if (!user) return { ok: false, error: "Not signed in" };
   if (!sub.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) return { ok: false, error: "Invalid subscription" };
+  if (!isValidPushEndpoint(sub.endpoint)) return { ok: false, error: "Invalid subscription endpoint" };
   await prisma.pushSubscription.upsert({
     where: { endpoint: sub.endpoint },
     create: { userId: user.id, endpoint: sub.endpoint, p256dh: sub.keys.p256dh, auth: sub.keys.auth },
