@@ -281,10 +281,10 @@
     font-weight: 400;
   }
 
-  /* Summary strip (inventory) */
+  /* Summary strip (inventory): 5 cells incl. Realized P/L */
   .strip {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 14px;
   }
   .cell {

@@ -52,6 +52,10 @@ export default async function InventoryPage({ searchParams }: { searchParams: { 
             {summary.listedCount} cards · {formatMoney(summary.listedValue)}
           </div>
         </div>
+        <div className="cell">
+          <div className="lbl">Realized P/L</div>
+          <div className={`val ${summary.realizedPL >= 0 ? "up" : "down"}`}>{formatMoney(summary.realizedPL)}</div>
+        </div>
       </div>
 
       <InventoryTable rows={rows} catalog={catalog} initialQuery={searchParams.q ?? ""} />
