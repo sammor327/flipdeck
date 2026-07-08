@@ -1,7 +1,7 @@
 // The scheduled worker's unit of work. One tick:
 //   1. pulls fresh quotes per card (provider, mock fallback) → appends PricePoints
 //   2. recomputes the cached MarketStat
-//   3. evaluates enabled alert rules against the dirty cards
+//   3. evaluates enabled alert rules
 //   4. fires TradeProposals + notifications for rules that trip (respecting
 //      cooldown); notify-only rules dispatch an info alert instead of a proposal
 //   5. evaluates watchlist target prices (buy/sell targets fire the same way)
@@ -28,7 +28,6 @@ import { userBestSpreads, type UserSpread } from "../spreads";
 import { computeMarketStat, SPREAD_FRESHNESS_MS, type StatPoint } from "../stats";
 import { evaluateWatchTarget } from "../watchTargets";
 import { fastLaneCardIds, resolveRuleCardIds } from "../fastLane";
-import { dirtyCards } from "../queue";
 import { formatMoney, formatSignedMoney, formatDelta } from "../format";
 
 type CardWithGame = Awaited<ReturnType<typeof loadCards>>[number];
@@ -174,7 +173,6 @@ async function runTickBody(opts: { fastLaneOnly?: boolean } = {}): Promise<TickR
     try {
       quotesInserted += await ingestCard(card, now);
       await recomputeStat(card.id, now);
-      await dirtyCards.add(card.id);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`[worker] card ${card.id} ingest failed:`, err);
