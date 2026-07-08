@@ -1,10 +1,12 @@
 "use client";
 
-import { type KeyboardEvent, useMemo, useRef, useState, useTransition } from "react";
+import { Fragment, type KeyboardEvent, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { CONDITIONS, GAMES, type Condition } from "@/lib/constants";
+import { CONDITIONS, GAMES, MARKETPLACES, type Condition, type FeeProfile, type Marketplace } from "@/lib/constants";
+import { netProceeds } from "@/lib/fees";
 import { formatMoney } from "@/lib/format";
+import { round2 } from "@/lib/math";
 import type { InventoryRow } from "@/lib/queries";
 import {
   addInventoryItem,
@@ -33,6 +35,8 @@ export interface CatalogEntry {
 
 type SortKey = "name" | "game" | "condition" | "quantity" | "costBasis" | "marketPrice" | "unrealizedPL" | "unrealizedPct" | "delta24hPct";
 
+type PanelKind = "sell" | "list" | "edit";
+
 function fuzzy(query: string, text: string): boolean {
   const q = query.toLowerCase().trim();
   if (!q) return true;
@@ -50,10 +54,12 @@ export function InventoryTable({
   rows,
   catalog,
   initialQuery = "",
+  feeProfiles,
 }: {
   rows: InventoryRow[];
   catalog: CatalogEntry[];
   initialQuery?: string;
+  feeProfiles: Record<Marketplace, FeeProfile>;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -64,6 +70,7 @@ export function InventoryTable({
   const [status, setStatus] = useState<string>("active");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "unrealizedPct", dir: -1 });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [panel, setPanel] = useState<{ rowId: string; kind: PanelKind } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -166,27 +173,7 @@ export function InventoryTable({
       router.refresh();
     });
 
-  const onSell = (r: InventoryRow) => {
-    const price = window.prompt(`Sale price per unit for ${r.name}?`, String(r.marketPrice ?? r.costBasis));
-    if (price == null) return;
-    const n = parseFloat(price);
-    if (!Number.isFinite(n)) return;
-    run(() => sellInventoryItem(r.id, n));
-  };
-  const onList = (r: InventoryRow) => {
-    const price = window.prompt(`List ${r.name} for sale at (per unit)?`, String(r.marketPrice ?? r.costBasis));
-    if (price == null) return;
-    const n = parseFloat(price);
-    if (!Number.isFinite(n)) return;
-    run(() => listInventoryItem(r.id, n));
-  };
-  const onEdit = (r: InventoryRow) => {
-    const cost = window.prompt(`Cost basis per unit for ${r.name}?`, String(r.costBasis));
-    if (cost == null) return;
-    const n = parseFloat(cost);
-    if (!Number.isFinite(n)) return;
-    run(() => updateInventoryItem(r.id, { costBasis: n }));
-  };
+  const openPanel = (r: InventoryRow, kind: PanelKind) => setPanel({ rowId: r.id, kind });
 
   const onImport = async (file: File) => {
     const text = await file.text();
@@ -349,7 +336,8 @@ export function InventoryTable({
               </thead>
               <tbody>
                 {filtered.map((r) => (
-                  <tr key={r.id}>
+                  <Fragment key={r.id}>
+                  <tr>
                     <td>
                       {r.status === "sold" ? null : (
                         <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} aria-label={`Select ${r.name}`} />
@@ -401,11 +389,11 @@ export function InventoryTable({
                       ) : (
                         <>
                           {r.status === "listed" ? (
-                            <button className="btn sm ghost" onClick={() => onSell(r)} disabled={pending}>
+                            <button className="btn sm ghost" onClick={() => openPanel(r, "sell")} disabled={pending}>
                               Sell
                             </button>
                           ) : (
-                            <button className="btn sm pri" onClick={() => onSell(r)} disabled={pending}>
+                            <button className="btn sm pri" onClick={() => openPanel(r, "sell")} disabled={pending}>
                               Sell
                             </button>
                           )}{" "}
@@ -416,16 +404,30 @@ export function InventoryTable({
                               </button>{" "}
                             </>
                           ) : null}
-                          <button className="btn sm ghost" onClick={() => onList(r)} disabled={pending}>
+                          <button className="btn sm ghost" onClick={() => openPanel(r, "list")} disabled={pending}>
                             List
                           </button>{" "}
-                          <button className="btn sm ghost" onClick={() => onEdit(r)} disabled={pending}>
+                          <button className="btn sm ghost" onClick={() => openPanel(r, "edit")} disabled={pending}>
                             Edit
                           </button>
                         </>
                       )}
                     </td>
                   </tr>
+                  {panel?.rowId === r.id && r.status !== "sold" ? (
+                    <tr>
+                      <td colSpan={12} style={{ padding: 0 }}>
+                        <ActionPanel
+                          key={`${panel.rowId}:${panel.kind}`}
+                          row={r}
+                          kind={panel.kind}
+                          feeProfiles={feeProfiles}
+                          onClose={() => setPanel(null)}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 ))}
               </tbody>
               <tfoot>
@@ -455,6 +457,124 @@ export function InventoryTable({
       <div className="hint" style={{ marginTop: 10 }}>
         Showing {filtered.length} of {rows.length} · press <kbd>Tab</kbd> to move through rows · every column is sortable.
       </div>
+    </div>
+  );
+}
+
+/**
+ * Inline sell/list/edit panel rendered as a full-width row under the card it
+ * acts on. Replaces the old window.prompt flow: prefilled price, live
+ * net-after-fees preview via netProceeds (client-side, no round-trip), and
+ * server-action errors surfaced inline instead of silently dropped.
+ */
+function ActionPanel({
+  row,
+  kind,
+  feeProfiles,
+  onClose,
+}: {
+  row: InventoryRow;
+  kind: PanelKind;
+  feeProfiles: Record<Marketplace, FeeProfile>;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [price, setPrice] = useState(() => String(kind === "edit" ? row.costBasis : row.marketPrice ?? row.costBasis));
+  const [marketplace, setMarketplace] = useState<Marketplace>("tcgplayer");
+  const [error, setError] = useState<string | null>(null);
+
+  const parsed = parseFloat(price);
+  // Sell/List need a positive price; Edit allows a cost basis of 0 (freebies).
+  const valid = Number.isFinite(parsed) && (kind === "edit" ? parsed >= 0 : parsed > 0);
+  const preview = kind !== "edit" && valid ? netProceeds(parsed, row.quantity, feeProfiles[marketplace]) : null;
+  const projectedPL = preview ? round2(preview.net - row.costBasis * row.quantity) : null;
+  const title = kind === "sell" ? "Sell" : kind === "list" ? "List" : "Edit";
+
+  const confirm = () => {
+    if (!valid || pending) return;
+    startTransition(async () => {
+      const res: { ok: boolean; error?: string } =
+        kind === "sell"
+          ? await sellInventoryItem(row.id, parsed, marketplace)
+          : kind === "list"
+            ? await listInventoryItem(row.id, parsed, marketplace)
+            : await updateInventoryItem(row.id, { costBasis: parsed });
+      if (!res.ok) {
+        setError(res.error ?? "Something went wrong");
+        return;
+      }
+      onClose();
+      router.refresh();
+    });
+  };
+
+  return (
+    <div
+      onKeyDown={(e: KeyboardEvent<HTMLDivElement>) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+        }
+      }}
+      style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", padding: "10px 14px" }}
+    >
+      <b>
+        {title} {row.name}
+        {row.quantity > 1 ? ` × ${row.quantity}` : ""}
+      </b>
+      <label className="hint" htmlFor={`panel-price-${row.id}`}>
+        {kind === "edit" ? "Cost basis / unit" : "Price / unit"}
+      </label>
+      <input
+        id={`panel-price-${row.id}`}
+        autoFocus
+        type="number"
+        min={0}
+        step="0.01"
+        value={price}
+        onChange={(e) => setPrice(e.target.value)}
+        onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            confirm();
+          }
+        }}
+        style={{ width: 110 }}
+      />
+      {kind !== "edit" ? (
+        <select value={marketplace} onChange={(e) => setMarketplace(e.target.value as Marketplace)} aria-label="Marketplace">
+          {MARKETPLACES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      ) : null}
+      <button className="btn pri" onClick={confirm} disabled={pending || !valid}>
+        {kind === "sell" ? "Sell" : kind === "list" ? "List" : "Save"}
+      </button>
+      <button className="btn ghost" onClick={onClose} disabled={pending}>
+        Cancel
+      </button>
+      {preview ? (
+        <span className="hint">
+          {kind === "list" ? "If it sells at this price: " : ""}
+          Gross {formatMoney(preview.gross)} · Fees + shipping {formatMoney(preview.feeAmount + preview.shipping)} · Net{" "}
+          <b>{formatMoney(preview.net)}</b>
+          {row.quantity > 1 ? ` (${formatMoney(preview.netPerUnit)}/unit)` : ""}
+        </span>
+      ) : null}
+      {kind === "sell" && projectedPL != null ? (
+        <span className="hint">
+          Projected realized P/L <Delta value={projectedPL} kind="money" />
+        </span>
+      ) : null}
+      {error ? (
+        <span className="down" role="alert">
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
