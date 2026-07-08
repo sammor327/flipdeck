@@ -2,7 +2,8 @@
 //   1. pulls fresh quotes per card (provider, mock fallback) → appends PricePoints
 //   2. recomputes the cached MarketStat
 //   3. evaluates enabled alert rules against the dirty cards
-//   4. fires TradeProposals + notifications for rules that trip (respecting cooldown)
+//   4. fires TradeProposals + notifications for rules that trip (respecting
+//      cooldown); notify-only rules dispatch an info alert instead of a proposal
 //   5. evaluates watchlist target prices (buy/sell targets fire the same way)
 //   6. expires stale pending proposals and records hindsight
 //   7. records hindsight for declined proposals whose horizon has passed
@@ -23,7 +24,8 @@ import { HOUR_MS, minOver, moveOverWindow, round2, type PricePointLite } from ".
 import { resolveExecution } from "../execution";
 import { dispatchNotification } from "../notifications/dispatch";
 import { providerFor, type ProviderQuote } from "../providers";
-import { computeMarketStat, type StatPoint } from "../stats";
+import { userBestSpreads, type UserSpread } from "../spreads";
+import { computeMarketStat, SPREAD_FRESHNESS_MS, type StatPoint } from "../stats";
 import { evaluateWatchTarget } from "../watchTargets";
 import { fastLaneCardIds, resolveRuleCardIds } from "../fastLane";
 import { dirtyCards } from "../queue";
@@ -178,9 +180,44 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
   const rules = await prisma.alertRule.findMany({ where: { enabled: true } });
   let proposalsCreated = 0;
 
+  // Fee-profile overrides (UserSettings.feeProfiles JSON) loaded once per rule
+  // owner — spread rules need them, and one user often has several rules.
+  const feeProfilesByUser = new Map<string, string | null>();
+
   for (const rule of rules) {
     try {
       const cardIds = await resolveRuleCardIds(rule);
+
+      // Spread rules evaluate the OWNER's after-fee spread, not the cached
+      // MarketStat.bestSpreadPct (computeMarketStat derives that with
+      // DEFAULT_FEE_PROFILES). Mirrors the read surfaces (userSpreadMap in
+      // queries.ts): one batched query over fresh NM market|sold quotes, then
+      // userBestSpreads under the owner's merged profiles. Cards with fewer
+      // than two fresh marketplaces are absent from the map → null → no fire,
+      // exactly like the spread scanner. Other triggers never read
+      // bestSpreadPct, so they keep the cached value.
+      let userSpreads: Map<string, UserSpread> | null = null;
+      if (rule.trigger === "spread" && cardIds.length > 0) {
+        if (!feeProfilesByUser.has(rule.userId)) {
+          const settings = await prisma.userSettings.findUnique({ where: { userId: rule.userId } });
+          feeProfilesByUser.set(rule.userId, settings?.feeProfiles ?? null);
+        }
+        const points = await prisma.pricePoint.findMany({
+          where: {
+            cardId: { in: cardIds },
+            condition: "NM",
+            priceType: { in: ["market", "sold"] },
+            capturedAt: { gte: new Date(now.getTime() - SPREAD_FRESHNESS_MS) },
+          },
+          select: { cardId: true, marketplace: true, price: true, currency: true, priceType: true, capturedAt: true },
+        });
+        userSpreads = userBestSpreads(
+          points.map((p) => ({ ...p, marketplace: p.marketplace as Marketplace })),
+          mergeFeeProfiles(feeProfilesByUser.get(rule.userId)),
+          { now }
+        );
+      }
+
       for (const cardId of cardIds) {
         const stat = await prisma.marketStat.findUnique({ where: { cardId } });
         if (!stat) continue;
@@ -191,7 +228,7 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
           currentPrice: stat.currentPrice,
           moveOverHours: (hours) => moveOverWindow(series, hours * HOUR_MS, now),
           lowestOverDays: (days) => minOver(series, days, now),
-          bestSpreadPct: stat.bestSpreadPct,
+          bestSpreadPct: userSpreads ? (userSpreads.get(cardId)?.netPct ?? null) : stat.bestSpreadPct,
         };
 
         const result = evaluateRule(
@@ -207,6 +244,28 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
         );
         if (!result.fired || !result.side) continue;
 
+        // Notify-only rules alert and start the cooldown — no proposal, no
+        // guardrails, no holdings gate (a sell alert on a card the user holds
+        // zero of must still notify). dispatchNotification itself holds
+        // delivery under the kill switch / quiet hours.
+        if (rule.action === "notify") {
+          const card = await prisma.card.findUnique({ where: { id: cardId }, select: { name: true } });
+          if (!card) continue;
+          await dispatchNotification({
+            userId: rule.userId,
+            title: `Alert — ${card.name} ${formatDelta(stat.delta24hPct ?? 0, "percent")}`,
+            body: `${result.reason ?? rule.name} · current price ${formatMoney(stat.currentPrice)}`,
+            deepLink: `${process.env.APP_URL || "http://localhost:3000"}/cards/${cardId}`,
+            kind: "info",
+            ruleId: rule.id,
+            allowInQuietHours: !rule.quietHoursRespected,
+          });
+          // Mark the rule fired so its cooldown starts — the lastFiredAt gate
+          // in evaluateRule is what keeps notify rules from spamming.
+          await prisma.alertRule.update({ where: { id: rule.id }, data: { lastFiredAt: now } });
+          continue;
+        }
+
         // Dedup: one live proposal per (rule, card).
         const existing = await prisma.tradeProposal.findFirst({
           where: { ruleId: rule.id, cardId, status: "pending" },
@@ -216,8 +275,6 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
         const created = await createProposal(rule, cardId, result.side, stat, result.reason ?? rule.name, result.evidence, now);
         if (created) proposalsCreated++;
       }
-      // Mark the rule fired so its cooldown starts (only matters if it produced a proposal;
-      // evaluateRule already gates on cooldown using lastFiredAt).
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`[worker] rule ${rule.id} failed:`, err);
@@ -373,8 +430,9 @@ async function buysCommittedTodayFor(userId: string, now: Date): Promise<number>
   return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
 }
 
+/** Fire a propose_trade rule: guardrails, holdings gate, proposal + notification. */
 async function createProposal(
-  rule: { id: string; userId: string; name: string; quantity: number; marketplace: string | null; action: string; proposalExpiryMinutes: number; quietHoursRespected: boolean },
+  rule: { id: string; userId: string; name: string; quantity: number; marketplace: string | null; proposalExpiryMinutes: number; quietHoursRespected: boolean },
   cardId: string,
   side: Side,
   stat: { currentPrice: number; median90d: number | null; delta24hPct: number | null; delta7dPct: number | null; bestSpreadPct: number | null; low90d: number | null; listingCount: number | null },
@@ -460,21 +518,19 @@ async function createProposal(
 
   await prisma.alertRule.update({ where: { id: rule.id }, data: { lastFiredAt: now } });
 
-  if (rule.action === "propose_trade" || rule.action === "notify") {
-    const delta = stat.delta24hPct ?? 0;
-    const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${card.name} ${formatDelta(delta, "percent")}`;
-    const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${rule.proposalExpiryMinutes} min`;
-    await dispatchNotification({
-      userId: rule.userId,
-      title,
-      body,
-      deepLink: `${process.env.APP_URL || "http://localhost:3000"}/alerts?proposal=${proposal.id}`,
-      kind: "proposal",
-      proposalId: proposal.id,
-      ruleId: rule.id,
-      allowInQuietHours: !rule.quietHoursRespected,
-    });
-  }
+  const delta = stat.delta24hPct ?? 0;
+  const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${card.name} ${formatDelta(delta, "percent")}`;
+  const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${rule.proposalExpiryMinutes} min`;
+  await dispatchNotification({
+    userId: rule.userId,
+    title,
+    body,
+    deepLink: `${process.env.APP_URL || "http://localhost:3000"}/alerts?proposal=${proposal.id}`,
+    kind: "proposal",
+    proposalId: proposal.id,
+    ruleId: rule.id,
+    allowInQuietHours: !rule.quietHoursRespected,
+  });
   return proposal;
 }
 
