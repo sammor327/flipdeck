@@ -283,3 +283,25 @@ Tests: 227 → 235 passing.
    empty state with working Add/Import CTAs. Verified live in a browser.
 
 Tests: 235 → 254 passing.
+
+## Cycle 13 — 2026-07-08 ~09:17–09:45 (critique mode)
+
+Fresh 4-critic sweep: 28 findings → 3 selected, 3 implemented, 3 approved,
+3 merged.
+
+1. **Condition-aware "Sell mine"** — the card page's sell CTA estimated net
+   at NM price even when your copies are LP/MP (now uses the same
+   conditionMultiplier path as inventory valuation — the two pages agree
+   to the cent), and the 90d low/high/median/volatility stats the worker
+   computes on every tick are finally rendered.
+2. **Push delivery can't wedge the worker** — a black-hole push endpoint
+   would hang the tick forever; deliveries now carry a 10s timeout
+   (timeouts map to 'failed', never pruned as 'gone'), and subscription
+   endpoints are validated (https-only, localhost dev exception, length
+   cap). +9 tests.
+3. **SQLite WAL + busy_timeout** — the two-process dev setup (next dev +
+   worker) could SQLITE_BUSY a user action mid-write; WAL mode and a 5s
+   busy timeout are applied on client construction, with connection_limit
+   documented. Verified persistent across processes via DB header bytes.
+
+Tests: 254 → 262 passing.
