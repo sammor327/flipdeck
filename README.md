@@ -35,6 +35,19 @@ npm run worker       # background price-ingest loop (or click "↻ Refresh price
 npm test             # unit tests: delta/spread math, fees, alert eval, expiry
 ```
 
+### SQLite and the two-process setup
+
+Running `npm run worker` next to `npm run dev` means **two OS processes write
+the same SQLite file**. To keep the worker's per-minute write burst from
+failing web actions with `SQLITE_BUSY` ("database is locked"), the shared
+Prisma client (`src/lib/db.ts`) automatically runs `PRAGMA journal_mode=WAL`
+(persists in the db file, so readers and the writer no longer block each
+other) and `PRAGMA busy_timeout=5000` (a blocked writer waits up to 5 s for
+the lock instead of erroring) on startup. `busy_timeout` is per-connection, so
+`?connection_limit=1` on `DATABASE_URL` is recommended (see
+[`.env.example`](.env.example)) — it pins Prisma to the single connection the
+pragma was applied to.
+
 ---
 
 ## What's implemented
