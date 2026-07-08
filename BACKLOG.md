@@ -2,38 +2,35 @@
 
 Deferred ideas from improvement cycles, roughly ordered. The prioritizer
 reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
-or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
+or when rejected. Last rebuilt from the cycle-10 critique sweep.
 
 ## Engine / correctness
-- Quiet-hours flush sweep + digestMode morning summary; defer/lengthen expiry for proposals born in quiet hours
-- createRule write-boundary validation: whitelist marketplace against MARKETPLACES, clamp cooldown/expiry/quantity, finite numeric params (unknown marketplace makes the rule silently dead)
-- Auth hygiene: magic-link consume race (conditional-claim updateMany), per-IP/email throttle, purge expired sessions/tokens in worker, upsertUserByEmail P2002 race
-- PricePoint retention/compaction pass + bounded recomputeStat reads + cache primarySeries per card within a tick
-- MarketStat freshness gate in rule/watch evaluation; surface per-card staleness in UI; drain the dead dirtyCards queue
-- Provider honesty: log/count mock-fallback engagements per tick, skip ingest instead of fabricating on real-provider failure, scale mock volatility by tick interval
+- Spread-rule proposals should propose the actual arbitrage: pass the triggering UserSpread into createProposal (buy marketplace/price, netPerCopy-based net)
+- Honor UserSettings.defaultMarketplaces in createProposal and evaluateWatchTargets (or remove the dead knob and fix the dashboard copy)
+- addWatch: run target prices through normalizeTarget (NaN/Infinity/negative currently persist and can spam proposals)
+- shippingFlat currency-unit fix (convert via toUsd or redefine as USD); USD-normalize cardmarket sale prices at the sell write boundary
+- Dedupe buysCommittedTodayFor (tick.ts private copy vs proposals.ts helper) into a shared module (cycle 10 follow-up)
+- Prune dead push subscriptions on 404/410 Gone; console fallback when no live subscription delivered
+- Per-item try/catch in expiry/hindsight sweeps; structured { ok:false } errors + timingSafeEqual on POST /api/worker/tick
+- Auth hygiene: magic-link consume race (conditional-claim updateMany), per-IP/email throttle, purge expired sessions/tokens in worker, upsertUserByEmail P2002 race; honest 'email not configured' dev UI
+- PricePoint retention/downsampling sweep + bounded recomputeStat and card-page history queries + expired Session/MagicLinkToken cleanup
+- MarketStat freshness gate in rule/watch evaluation; surface per-card staleness in UI
+- Provider honesty: log/count mock-fallback engagements per tick, skip ingest instead of fabricating on real-provider failure, scale mock volatility by tick interval; surface live-vs-simulated in sidebar freshness indicator
 
 ## Features (bigger, may need own cycle)
-- Card search/ingest from providers (searchCards on the provider interface, create Card rows on demand, CSV import creates unmatched catalog entries) — L effort, core Track promise
-- Analytics page: win rate, avg hold duration, best/worst flips, per-game breakdown from sold rows (FEATURES #11)
+- Card search/ingest from providers (searchCards on the provider interface, create Card rows on demand, catalog-backed top-bar search with a real Ctrl/Cmd-K handler) — L, needs its own cycle; at minimum drop the dead ⌘K placeholder
+- Seed demo decay: stagger 4-5 pending-proposal expiries (2-6h), seed 3-4 days of cardmarket/eBay history so approvals and the spread scanner survive past seed+25min (prisma/seed.ts only, S — strong candidate)
+- Inventory edit panel: expose quantity/condition/tags/location (action already accepts them); add location to AddCardForm and the CSV import/export round-trip
+- First-run inventory onboarding empty state (Add your first card / Import CSV CTAs instead of 'No cards match')
 - Saved views in inventory (FEATURES #3) — persist named filter+sort combos in localStorage; add price-band and trend filters
-- 'Edit price' on ApprovalCard per mockup — server action to update proposedPrice on a still-pending proposal with fee recompute
-- Top-bar search should hit the card catalog with links/Watch buttons, and implement or drop the advertised Cmd/Ctrl-K shortcut
 
 ## UX / UI
-- Confirmation/undo for bulk delete and rule delete (contradicts 'every action has an undo' copy); bulk-bar prompts are still window.prompt-based; listed row's Sell prefill could use listedPrice
-- Shared toast/inline-feedback primitive; wire dropped error branches in RuleBuilder, NewRuleForm, WatchButton, TargetCell, AddCardForm, bulk actions
-- requireUser() helper redirecting to /signin instead of non-null assertions on every (app) page (session-expiry crash)
-- Mobile polish: sidebar backdrop/click-away + Escape, phone-first approval layout per mockups/mobile-approval.html
-- Watchlist follow-ups (cycle 3 nits): TargetCell Escape-cancel ref can swallow the next commit once; server-action validation errors silently ignored client-side; card page treats price of 0 as missing in spread panel
-- SettingsForm shows "Saved" even when the action rejects (cycle 4 nit)
-- Small polish: hardcoded '8% floor' copy, hand-rolled percent formatting on inventory summary, bare chart empty state, freshness stamp on inventory header
-
-## Auth / infra
-- Magic-link honesty: 'email delivery not configured' state, per-IP/email throttle, purge expired sessions/tokens in the worker
-
-## Data / demo quality
-- Provider fallback observability (log/count mock fallbacks per tick, provenance on PricePoint — source column is a schema change, serial cycle) + seed real external catalog ids
-- Seed demo decay: longer pending-proposal expiries, 90d cardmarket/eBay backfill, 8-10 sold items for analytics
+- Shared toast/status primitive + check res.ok at every call site (SettingsForm '✓ Saved' on failure, TargetCell silent revert, WatchButton, AddCardForm, bulk actions, RefreshPrices result summary)
+- Confirmation + undo for bulk delete and rule delete; replace bulk-bar window.prompt with the inline ActionPanel pattern, show selection total value, Escape-to-clear
+- Card page: 'Sell mine' should open the real sell flow instead of a bare deep link; spread-panel advice links to RuleBuilder with trigger preselected; un-hardcode the 8% floor
+- Replace hand-rolled signed money/percent strings on the alerts attribution line and inventory summary with formatSignedMoney/formatSignedPercent/Delta
+- Mobile polish: sidebar backdrop/click-away/Escape/scroll-lock, phone-first approvals layout per mockups/mobile-approval.html, service-worker app-shell precache + offline fallback
+- Watchlist nits: TargetCell Escape-cancel ref can swallow the next commit once; card page treats price of 0 as missing in spread panel
 
 ## Schema changes (serial cycles only — no parallel worktrees)
 - Quiet hours timezone correctness — needs a timezone column on UserSettings

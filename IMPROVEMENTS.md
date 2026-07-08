@@ -213,3 +213,28 @@ Tests: 156 → 184 passing.
    end-to-end. +9 tests.
 
 Tests: 184 → 193 passing.
+
+## Cycle 10 — 2026-07-08 ~06:17–06:50 (critique mode)
+
+Fresh 4-critic sweep: 30 findings → 3 selected, 3 implemented, 3 approved,
+3 merged.
+
+1. **Proposal edit guardrails + approve stale-read fix** — cycle 8's price
+   editor bypassed the kill switch and daily spend cap (edit a $10 buy to
+   $10,000 and approve); edits now run the same guardrail check with the
+   proposal's own value excluded from today's committed spend. Also fixed:
+   approve now re-reads the row inside the transaction, so an edit landing
+   between read and claim is what gets recorded. +8 tests.
+2. **Quiet hours flush + digest** — held notifications were never
+   delivered when the window ended. New flush sweep (worker phase 8):
+   digest mode sends one morning summary for 2+ held alerts; otherwise
+   individual replay; kill-switch-held rows flush when lifted; 36h age
+   bound; per-user fault isolation. Overnight proposals born during quiet
+   hours get extended expiry (quietHoursEnd + 30min) so they're still
+   actionable in the morning. +18 tests.
+3. **/analytics page** (FEATURES #11) — win rate, avg hold duration,
+   best/worst flips, per-game realized P/L, cumulative P/L chart, empty
+   state, sidebar entry. Pure `src/lib/analytics.ts` + live-verified totals
+   match the inventory summary strip. +8 tests.
+
+Tests: 193 → 227 passing.
