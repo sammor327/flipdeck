@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { approveProposal, declineProposal, undoDecision } from "@/app/actions/proposals";
+import { approveProposal, declineProposal, editProposalPrice, undoDecision } from "@/app/actions/proposals";
 import { UNDO_WINDOW_MS } from "@/lib/constants";
 import { formatCountdown, formatMoney } from "@/lib/format";
 import { CardArt } from "./CardArt";
@@ -32,6 +32,8 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
   const [pending, startTransition] = useTransition();
   const [decision, setDecision] = useState<null | { kind: "approved" | "declined"; until: number; deepLink?: string }>(null);
   const [error, setError] = useState<string | null>(null);
+  // Non-null while the inline price editor is open (holds the input's raw text).
+  const [editPrice, setEditPrice] = useState<string | null>(null);
 
   const remaining = data.expiresAt - now;
   const duration = Math.max(1, data.expiresAt - data.createdAt);
@@ -63,6 +65,25 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
       const res = await declineProposal(data.id);
       if (!res.ok) return setError(res.error ?? "Failed");
       setDecision({ kind: "declined", until: res.undoUntil ?? Date.now() + UNDO_WINDOW_MS });
+    });
+
+  const openEdit = () => {
+    setError(null);
+    setEditPrice(String(data.proposedPrice));
+  };
+
+  const cancelEdit = () => {
+    setError(null);
+    setEditPrice(null);
+  };
+
+  const doSaveEdit = () =>
+    startTransition(async () => {
+      setError(null);
+      const res = await editProposalPrice(data.id, Number(editPrice));
+      if (!res.ok) return setError(res.error ?? "Failed");
+      setEditPrice(null);
+      router.refresh(); // page rebuilds the card from the DB → evidence rows update
     });
 
   const doUndo = () =>
@@ -137,12 +158,47 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
       ) : null}
 
       <div className="acts">
-        <button className="btn good sm" onClick={doApprove} disabled={pending || expired} title={data.execDescription}>
-          {expired ? "Expired" : `Approve — ${data.execLabel.toLowerCase()}`}
-        </button>
-        <button className="btn ghost sm" onClick={doDecline} disabled={pending || expired}>
-          Decline
-        </button>
+        {editPrice != null ? (
+          <>
+            <input
+              autoFocus
+              type="number"
+              min={0.01}
+              step="0.01"
+              value={editPrice}
+              aria-label="New price"
+              style={{ width: 96 }}
+              disabled={pending}
+              onChange={(e) => setEditPrice(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  doSaveEdit();
+                } else if (e.key === "Escape") {
+                  cancelEdit();
+                }
+              }}
+            />
+            <button className="btn good sm" onClick={doSaveEdit} disabled={pending || expired}>
+              Save
+            </button>
+            <button className="btn ghost sm" onClick={cancelEdit} disabled={pending}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="btn good sm" onClick={doApprove} disabled={pending || expired} title={data.execDescription}>
+              {expired ? "Expired" : `Approve — ${data.execLabel.toLowerCase()}`}
+            </button>
+            <button className="btn ghost sm" onClick={doDecline} disabled={pending || expired}>
+              Decline
+            </button>
+            <button className="btn ghost sm" onClick={openEdit} disabled={pending || expired}>
+              Edit price
+            </button>
+          </>
+        )}
         <span className="expire" aria-label={`Expires in ${formatCountdown(data.expiresAt, now)}`}>
           ⏳ {formatCountdown(data.expiresAt, now)}
         </span>
