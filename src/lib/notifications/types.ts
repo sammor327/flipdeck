@@ -25,6 +25,9 @@ export interface PushPayload {
   body: string;
   deepLink?: string;
   tag?: string;
+  /** Set for kind="proposal" pushes so the service worker can render Approve/Decline actions. */
+  proposalId?: string;
+  kind?: NotificationKind;
 }
 
 /**

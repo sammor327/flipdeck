@@ -24,7 +24,14 @@ export async function dispatchNotification(input: NotifyInput) {
 
   const usePush = webPushChannel.isConfigured() && (settings?.pushEnabled ?? true);
   const channel = usePush ? "webpush" : "console";
-  const payload = { title: input.title, body: input.body, deepLink: input.deepLink, tag: input.proposalId };
+  const payload = {
+    title: input.title,
+    body: input.body,
+    deepLink: input.deepLink,
+    tag: input.proposalId,
+    proposalId: input.proposalId,
+    kind: input.kind,
+  };
 
   let delivered = false;
   if (!held) {
