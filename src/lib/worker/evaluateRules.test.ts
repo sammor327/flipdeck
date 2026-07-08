@@ -7,6 +7,9 @@
 //     cached MarketStat.bestSpreadPct — so a high fee override suppresses a
 //     fire the cached stat would have produced, and a user with no settings
 //     row fires from the same numbers the read surfaces show.
+//   - non-spread propose_trade fires resolve their marketplace with the
+//     cycle-12 precedence: explicit rule.marketplace → the owner's per-game
+//     default (UserSettings.defaultMarketplaces) → tcgplayer.
 //
 // The prisma mock is state-driven (like tick.test.ts): tests stage rows in
 // `state`, and write calls are recorded in `calls` for assertions.
@@ -66,7 +69,7 @@ vi.mock("../db", () => ({
     },
     tradeProposal: {
       findFirst: async () => state.pendingProposal,
-      findMany: async () => [], // buysCommittedTodayFor
+      findMany: async () => [], // buysCommittedToday (lib/spend.ts)
       create: async ({ data }: any) => {
         const row = { id: `tp-${calls.proposalsCreated.length + 1}`, ...data };
         calls.proposalsCreated.push(row);
@@ -310,6 +313,95 @@ describe("evaluateAllRules — per-user spread evaluation", () => {
 
     expect(calls.settingsReads).toEqual(["u1"]); // one read, second rule hits the cache
     expect(calls.spreadQueries).toHaveLength(2); // but each rule batches its own card set
+  });
+});
+
+describe("evaluateAllRules — default marketplace resolution (cycle 12)", () => {
+  /** A propose_trade rule with no explicit marketplace that always fires (price 12 ≤ threshold 100 → buy). */
+  function defaultMarketplaceRule(overrides: Row = {}): Row {
+    return rule({
+      action: "propose_trade",
+      trigger: "threshold_below",
+      params: JSON.stringify({ threshold: 100 }),
+      proposeSide: "buy",
+      marketplace: null,
+      ...overrides,
+    });
+  }
+
+  /** A settings row with the guardrails open and the given defaultMarketplaces JSON. */
+  function settingsWith(defaultMarketplaces: string): Row {
+    return { userId: "u1", killSwitch: false, dailySpendCap: 0, feeProfiles: null, defaultMarketplaces };
+  }
+
+  it("a rule with marketplace null uses the owner's per-game default — fees and deep link follow", async () => {
+    state.rules = [defaultMarketplaceRule()];
+    state.stats.set("c1", stat()); // currentPrice 12, median90d null → resale basis 12
+    state.settings = settingsWith(JSON.stringify({ mtg: "cardmarket" }));
+
+    const { proposalsCreated } = await evaluateAllRules(new Date());
+
+    expect(proposalsCreated).toBe(1);
+    const p = calls.proposalsCreated[0];
+    expect(p).toMatchObject({ ruleId: "r1", side: "buy", proposedPrice: 12, marketplace: "cardmarket" });
+    // Fees follow: buyEdge under cardmarket's 5% profile (12 × 0.95 − 12 = −0.60),
+    // not tcgplayer's 12.75%.
+    expect(p.netAfterFees).toBe(-0.6);
+    // And so does the deep link.
+    expect(p.deepLink).toContain("cardmarket.com");
+  });
+
+  it("an explicitly-set rule.marketplace beats the user default", async () => {
+    state.rules = [defaultMarketplaceRule({ marketplace: "ebay" })];
+    state.stats.set("c1", stat());
+    state.settings = settingsWith(JSON.stringify({ mtg: "cardmarket" }));
+
+    await evaluateAllRules(new Date());
+
+    expect(calls.proposalsCreated).toHaveLength(1);
+    expect(calls.proposalsCreated[0].marketplace).toBe("ebay");
+    expect(calls.proposalsCreated[0].deepLink).toContain("ebay.com");
+  });
+
+  it("spread legs still beat both the rule marketplace and the user default", async () => {
+    const now = new Date();
+    state.rules = [
+      defaultMarketplaceRule({
+        trigger: "spread",
+        params: JSON.stringify({ spreadPct: 10 }),
+        marketplace: "cardmarket",
+      }),
+    ];
+    state.stats.set("c1", stat({ currentPrice: 10 }));
+    state.spreadPoints = freshSpreadPoints(now); // buy tcgplayer @ $10 → sell ebay @ $15
+    state.settings = settingsWith(JSON.stringify({ mtg: "cardmarket" }));
+
+    await evaluateAllRules(now);
+
+    expect(calls.proposalsCreated).toHaveLength(1);
+    expect(calls.proposalsCreated[0]).toMatchObject({ marketplace: "tcgplayer", proposedPrice: 10 });
+  });
+
+  it("falls back to tcgplayer on no settings row, empty map, missing game key, unknown value, or malformed JSON", async () => {
+    const scenarios: Array<Row | null> = [
+      null,
+      settingsWith("{}"),
+      settingsWith(JSON.stringify({ pokemon: "cardmarket" })), // some other game's default
+      settingsWith(JSON.stringify({ mtg: "amazon" })), // not a known marketplace
+      settingsWith("not json{"),
+    ];
+    for (const settings of scenarios) {
+      calls.proposalsCreated = [];
+      state.rules = [defaultMarketplaceRule()];
+      state.stats.set("c1", stat());
+      state.settings = settings;
+
+      await evaluateAllRules(new Date());
+
+      expect(calls.proposalsCreated).toHaveLength(1);
+      expect(calls.proposalsCreated[0].marketplace).toBe("tcgplayer");
+      expect(calls.proposalsCreated[0].deepLink).toContain("tcgplayer.com");
+    }
   });
 });
 
