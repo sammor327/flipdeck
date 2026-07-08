@@ -5,8 +5,9 @@ reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
 or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
 
 ## Engine / correctness
-- Worker robustness: single-flight guard across the three runTick entry points, self-scheduling setTimeout loop, per-card/per-proposal error isolation (ingest loop try/catch, dispatch try/catch in sweeps), wire the unused rate limiter
-- Race-safe proposal creation: pending-dedup findFirst→create has no DB backstop; needs conditional lastFiredAt claim (pair with single-flight item)
+- Wire the unused MemoryRateLimiter into provider fetches; drain-or-delete the dead dirtyCards queue (split out of cycle 8's worker item)
+- requireUser() helper redirecting to /signin, replacing (await getCurrentUser())! non-null assertions on all 8 (app) pages — session-expiry crash on soft navigation, verified still present (strong candidate)
+- RuleBuilder/NewRuleForm don't display createRule validation errors yet (cycle 8 follow-up)
 - Quiet-hours flush sweep + digestMode morning summary; defer/lengthen expiry for proposals born in quiet hours
 - createRule write-boundary validation: whitelist marketplace against MARKETPLACES, clamp cooldown/expiry/quantity, finite numeric params (unknown marketplace makes the rule silently dead)
 - Auth hygiene: magic-link consume race (conditional-claim updateMany), per-IP/email throttle, purge expired sessions/tokens in worker, upsertUserByEmail P2002 race

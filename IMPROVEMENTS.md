@@ -171,3 +171,26 @@ Fresh 4-critic sweep: 29 findings → 3 selected, 3 implemented, 3 approved,
    concurrent flip-to-sold.
 
 Tests: 136 → 156 passing.
+
+## Cycle 8 — 2026-07-08 ~04:17–04:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Worker robustness** — single-flight guard coalesces concurrent
+   `runTick` calls (all three entry points); run.ts uses a self-scheduling
+   loop instead of setInterval; per-card try/catch so one bad provider call
+   can't abort rule/watch/expiry/hindsight sweeps; and rule firing uses a
+   conditional lastFiredAt compare-and-set claim, closing the cross-process
+   double-fire race. Guardrail-blocked fires still never consume cooldown.
+   +7 tests.
+2. **createRule validation** — a rule with an unknown marketplace was
+   silently dead. New pure `src/lib/ruleValidation.ts`: whitelists
+   marketplace/trigger/scope/action, rejects NaN/Infinity and missing
+   thresholds with human-readable errors, clamps name/window/lookback/
+   quantity/cooldown/expiry ranges. +16 tests.
+3. **Edit price on approvals** — mockup parity: pending approvals get an
+   inline price editor; the server recomputes net-after-fees exactly like
+   the worker (user fee profiles, sell netProceeds / buy edge vs median),
+   persisted via conditional claim so it can't race approve/expiry. +5 tests.
+
+Tests: 156 → 184 passing.
