@@ -12,7 +12,7 @@ vi.mock("web-push", () => ({
   default: { setVapidDetails: vi.fn(), sendNotification: sendMock },
 }));
 
-import { webPushChannel } from "./webpush";
+import { PUSH_TIMEOUT_MS, webPushChannel } from "./webpush";
 
 const sub = { endpoint: "https://push.example/e1", p256dh: "p", auth: "a" };
 const payload = { title: "T", body: "B" };
@@ -38,8 +38,17 @@ describe("webPushChannel.deliver", () => {
     expect(await webPushChannel.deliver(sub, payload)).toBe("ok");
     expect(sendMock).toHaveBeenCalledWith(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      { timeout: PUSH_TIMEOUT_MS }
     );
+  });
+
+  it("passes a socket timeout on every send so a black-hole endpoint cannot hang the worker", async () => {
+    sendMock.mockResolvedValue({ statusCode: 201 });
+    await webPushChannel.deliver(sub, payload);
+    const options = sendMock.mock.calls[0][2];
+    expect(options).toEqual({ timeout: PUSH_TIMEOUT_MS });
+    expect(PUSH_TIMEOUT_MS).toBe(10_000);
   });
 
   it("returns gone on HTTP 410 (subscription expired)", async () => {
@@ -59,6 +68,13 @@ describe("webPushChannel.deliver", () => {
 
   it("returns failed on a plain network error with no statusCode", async () => {
     sendMock.mockRejectedValue(new Error("ECONNRESET"));
+    expect(await webPushChannel.deliver(sub, payload)).toBe("failed");
+  });
+
+  it("returns failed (not gone) on a socket timeout, so the subscription is not pruned", async () => {
+    // web-push's timeout rejection has no statusCode — a slow push service
+    // must be treated as transient, never as a dead subscription.
+    sendMock.mockRejectedValue(new Error("Socket timeout"));
     expect(await webPushChannel.deliver(sub, payload)).toBe("failed");
   });
 

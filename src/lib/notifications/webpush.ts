@@ -5,6 +5,15 @@
 import webpush from "web-push";
 import type { DeliverResult, PushChannel, PushPayload, PushSub } from "./types";
 
+/**
+ * Socket timeout for a single send. web-push only sets a timeout when one is
+ * passed explicitly, so without this a black-hole endpoint hangs the request
+ * forever — and since the worker tick awaits deliveries, the whole ingest
+ * loop with it. A timeout rejection has no statusCode, so deliver() maps it
+ * to "failed" (transient), never "gone". Overridable via PUSH_TIMEOUT_MS.
+ */
+export const PUSH_TIMEOUT_MS = Number(process.env.PUSH_TIMEOUT_MS) || 10_000;
+
 let ready = false;
 function ensureConfigured(): boolean {
   const pub = process.env.VAPID_PUBLIC_KEY;
@@ -27,7 +36,8 @@ export const webPushChannel: PushChannel = {
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        JSON.stringify(payload)
+        JSON.stringify(payload),
+        { timeout: PUSH_TIMEOUT_MS }
       );
       return "ok";
     } catch (err) {
