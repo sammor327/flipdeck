@@ -7,7 +7,7 @@ import { PriceChart } from "@/components/PriceChart";
 import { RuleBuilder } from "@/components/RuleBuilder";
 import { WatchButton } from "@/components/WatchButton";
 import {
-  CONDITION_MULTIPLIER,
+  conditionMultiplier,
   marketplaceById,
   MARKETPLACES,
   type Condition,
@@ -19,7 +19,7 @@ import { prisma } from "@/lib/db";
 import { buildDeepLink } from "@/lib/execution";
 import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { bestSpread, netProceeds, toUsd, type MarketQuote } from "@/lib/fees";
-import { formatMoney, formatRelativeTime } from "@/lib/format";
+import { formatMoney, formatPercent, formatRelativeTime } from "@/lib/format";
 import { round2 } from "@/lib/math";
 import { SPREAD_FRESHNESS_MS } from "@/lib/stats";
 
@@ -97,7 +97,20 @@ export default async function CardDetailPage({ params }: { params: { id: string 
   const freshness = latest.get("tcgplayer:market")?.capturedAt
     ? formatRelativeTime(latest.get("tcgplayer:market")!.capturedAt)
     : "—";
-  const estNet = netProceeds(price, Math.max(1, owned), profiles.tcgplayer).net;
+  // Discount the NM stat price by the holding's condition before fee math so
+  // the CTA matches the condition-aware value the inventory page shows.
+  const estNet = netProceeds(round2(price * conditionMultiplier(conditionOwned)), Math.max(1, owned), profiles.tcgplayer).net;
+
+  // 90d band/volatility hint — only when the stat row exists and has at least
+  // one of the four fields, so a missing MarketStat never renders "$0.00–$0.00".
+  const stat90d =
+    card.marketStat &&
+    (card.marketStat.low90d != null ||
+      card.marketStat.high90d != null ||
+      card.marketStat.median90d != null ||
+      card.marketStat.volatility != null)
+      ? card.marketStat
+      : null;
 
   const sellLink = buildDeepLink("tcgplayer", "sell", { name: card.name, setName: card.setName, setCode: card.setCode, gameSlug: card.game.slug as GameSlug });
   const buyLink = buildDeepLink("tcgplayer", "buy", { name: card.name, setName: card.setName, setCode: card.setCode, gameSlug: card.game.slug as GameSlug });
@@ -132,11 +145,19 @@ export default async function CardDetailPage({ params }: { params: { id: string 
               liquidity: {card.marketStat?.liquidityScore ?? "—"}/100 ({card.marketStat?.listingCount ?? 0} listings)
             </span>
           </div>
+          {stat90d ? (
+            <div className="hint" style={{ fontSize: 13, marginTop: 4 }}>
+              90d range {stat90d.low90d != null ? formatMoney(stat90d.low90d) : "—"}–
+              {stat90d.high90d != null ? formatMoney(stat90d.high90d) : "—"} · median{" "}
+              {stat90d.median90d != null ? formatMoney(stat90d.median90d) : "—"} · volatility{" "}
+              {stat90d.volatility != null ? formatPercent(stat90d.volatility) : "—"}
+            </div>
+          ) : null}
 
           <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap" }}>
             {owned > 0 ? (
               <a className="btn pri" href={sellLink} target="_blank" rel="noopener noreferrer">
-                Sell mine — est. net {formatMoney(estNet)}
+                Sell mine{conditionOwned !== "NM" ? ` (${conditionOwned})` : ""} — est. net {formatMoney(estNet)}
               </a>
             ) : null}
             <a className="btn good" href={buyLink} target="_blank" rel="noopener noreferrer">
