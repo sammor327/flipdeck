@@ -22,6 +22,7 @@ export function RuleBuilder({ cardId, cardName, currentPrice }: { cardId: string
   const [quiet, setQuiet] = useState(true);
   const [backtest, setBacktest] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const input = (): CreateRuleInput => ({
     name: `${RULE_TRIGGER_LABELS[trigger].replace("…", "")} — ${cardName}`.slice(0, 60),
@@ -43,12 +44,15 @@ export function RuleBuilder({ cardId, cardName, currentPrice }: { cardId: string
 
   const onCreate = () =>
     startTransition(async () => {
+      setError(null);
       const res = await createRule(input());
-      if (res.ok) {
-        setDone(true);
-        router.refresh();
-        setTimeout(() => setDone(false), 2500);
+      if (!res.ok) {
+        setError(res.error ?? "Couldn't create rule");
+        return;
       }
+      setDone(true);
+      router.refresh();
+      setTimeout(() => setDone(false), 2500);
     });
 
   const onBacktest = () =>
@@ -65,7 +69,14 @@ export function RuleBuilder({ cardId, cardName, currentPrice }: { cardId: string
       </div>
 
       <label className="hint">When</label>
-      <select value={trigger} onChange={(e) => setTrigger(e.target.value as RuleTrigger)} style={{ width: "100%", marginTop: 4 }}>
+      <select
+        value={trigger}
+        onChange={(e) => {
+          setTrigger(e.target.value as RuleTrigger);
+          setError(null);
+        }}
+        style={{ width: "100%", marginTop: 4 }}
+      >
         {(Object.keys(RULE_TRIGGER_LABELS) as RuleTrigger[]).map((t) => (
           <option key={t} value={t}>
             {RULE_TRIGGER_LABELS[t]}
@@ -158,6 +169,13 @@ export function RuleBuilder({ cardId, cardName, currentPrice }: { cardId: string
           Backtest
         </button>
       </div>
+      {error ? (
+        <div className="hint" style={{ marginTop: 10 }}>
+          <span className="down" role="alert">
+            {error}
+          </span>
+        </div>
+      ) : null}
       {backtest ? (
         <div className="hint" style={{ marginTop: 10 }}>
           Backtest: {backtest}

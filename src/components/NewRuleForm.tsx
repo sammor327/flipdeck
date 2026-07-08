@@ -20,9 +20,11 @@ export function NewRuleForm() {
   const [spreadPct, setSpreadPct] = useState(8);
   const [lookbackDays, setLookbackDays] = useState(90);
   const [thenChoice, setThenChoice] = useState("sell");
+  const [error, setError] = useState<string | null>(null);
 
   const submit = () =>
     startTransition(async () => {
+      setError(null);
       const input: CreateRuleInput = {
         name: name.trim() || "Untitled rule",
         scope,
@@ -37,16 +39,25 @@ export function NewRuleForm() {
         proposeSide: thenChoice === "buy" ? "buy" : thenChoice === "sell" ? "sell" : "auto",
       };
       const res = await createRule(input);
-      if (res.ok) {
-        setOpen(false);
-        setName("");
-        router.refresh();
+      if (!res.ok) {
+        setError(res.error ?? "Couldn't create rule");
+        return;
       }
+      setOpen(false);
+      setName("");
+      router.refresh();
     });
 
   if (!open) {
     return (
-      <button className="btn ghost sm" style={{ marginTop: 12, width: "100%" }} onClick={() => setOpen(true)}>
+      <button
+        className="btn ghost sm"
+        style={{ marginTop: 12, width: "100%" }}
+        onClick={() => {
+          setOpen(true);
+          setError(null);
+        }}
+      >
         + New rule
       </button>
     );
@@ -102,6 +113,13 @@ export function NewRuleForm() {
       <button className="btn pri" style={{ marginTop: 10, width: "100%" }} onClick={submit} disabled={pending}>
         Create rule
       </button>
+      {error ? (
+        <div className="hint" style={{ marginTop: 8 }}>
+          <span className="down" role="alert">
+            {error}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
