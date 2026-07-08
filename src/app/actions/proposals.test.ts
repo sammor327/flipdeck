@@ -129,6 +129,7 @@ vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 import { approveProposal, declineProposal, editProposalPrice, undoDecision } from "./proposals";
 import { DEFAULT_FEE_PROFILES } from "@/lib/constants";
 import { buyEdge, netProceeds } from "@/lib/fees";
+import { round2 } from "@/lib/math";
 
 function seedProposal(overrides: Row = {}): Row {
   const now = Date.now();
@@ -368,6 +369,102 @@ describe("editProposalPrice", () => {
     expect(db.tradeProposals[0].netAfterFees).toBe(8.5);
     // The row is untouched — the worker sweep owns the pending→expired flip.
     expect(db.tradeProposals[0].status).toBe("pending");
+  });
+
+  // Cycle-11 spread proposals persist both legs in priceSnapshot. A BUY-side
+  // spread resells at the arb's sell leg, so an edit must recompute net the way
+  // the worker created it (computeSpread → round2(netPerCopy × qty)), not via
+  // buyEdge at the buy-leg marketplace's median.
+  function spreadLegs(overrides: Row = {}): Row {
+    return {
+      buyMarketplace: "cardmarket",
+      sellMarketplace: "tcgplayer",
+      buyPrice: 10,
+      sellPrice: 15,
+      netPct: 25,
+      netPerCopy: 2.5,
+      ...overrides,
+    };
+  }
+
+  it("recomputes a BUY-side spread proposal via its snapshot sell leg, not buyEdge", async () => {
+    seedProposal({
+      side: "buy",
+      quantity: 2,
+      proposedPrice: 10,
+      marketplace: "cardmarket", // the BUY leg — resale happens on tcgplayer
+      netAfterFees: 5,
+      priceSnapshot: JSON.stringify({ price: 10, median90d: 14, ...spreadLegs() }),
+    });
+    db.marketStats.push({ cardId: "c1", currentPrice: 11, median90d: 14 });
+
+    const res = await editProposalPrice("tp-1", 9.25);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(9.25);
+    const netPerCopy = round2(netProceeds(15, 1, DEFAULT_FEE_PROFILES.tcgplayer).net - 9.25);
+    expect(db.tradeProposals[0].netAfterFees).toBe(round2(netPerCopy * 2));
+    // …and NOT the single-market recompute the old path would have produced.
+    expect(db.tradeProposals[0].netAfterFees).not.toBe(
+      buyEdge(9.25, 2, 14, "cardmarket", DEFAULT_FEE_PROFILES).net
+    );
+  });
+
+  it("honors fee overrides for the spread's sell leg, not the proposal's buy-leg marketplace", async () => {
+    seedProposal({
+      side: "buy",
+      quantity: 3,
+      proposedPrice: 10,
+      marketplace: "cardmarket",
+      netAfterFees: 5,
+      priceSnapshot: JSON.stringify({ price: 10, ...spreadLegs() }),
+    });
+    const override = { feePct: 20, paymentFeePct: 0, shippingFlat: 1 };
+    db.userSettings.push({ id: "us-1", userId: "u1", feeProfiles: JSON.stringify({ tcgplayer: override }) });
+
+    const res = await editProposalPrice("tp-1", 11);
+    expect(res).toEqual({ ok: true });
+    const netPerCopy = round2(netProceeds(15, 1, override).net - 11);
+    expect(db.tradeProposals[0].netAfterFees).toBe(round2(netPerCopy * 3));
+  });
+
+  it("keeps a SELL-side spread proposal on netProceeds at proposal.marketplace (regression pin)", async () => {
+    // For sell-side spreads proposal.marketplace IS the sell leg, so the
+    // existing single-market path already matches the worker.
+    seedProposal({
+      side: "sell",
+      quantity: 2,
+      proposedPrice: 15,
+      marketplace: "tcgplayer",
+      netAfterFees: 17,
+      priceSnapshot: JSON.stringify({ price: 15, ...spreadLegs() }),
+    });
+
+    const res = await editProposalPrice("tp-1", 16);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].netAfterFees).toBe(netProceeds(16, 2, DEFAULT_FEE_PROFILES.tcgplayer).net);
+  });
+
+  it("falls back to buyEdge without throwing when snapshot legs are malformed", async () => {
+    for (const legs of [
+      spreadLegs({ sellMarketplace: "garbage" }), // string, but not a known marketplace
+      spreadLegs({ sellPrice: "NaN" }), // not a finite number
+      { buyMarketplace: "cardmarket" }, // sell leg absent entirely
+    ]) {
+      resetDb();
+      seedProposal({
+        side: "buy",
+        quantity: 2,
+        proposedPrice: 10,
+        netAfterFees: 5,
+        priceSnapshot: JSON.stringify({ price: 10, median90d: 14, ...legs }),
+      });
+      const res = await editProposalPrice("tp-1", 9.25);
+      expect(res).toEqual({ ok: true });
+      // No marketStat row → the median falls back to the snapshot's median90d.
+      expect(db.tradeProposals[0].netAfterFees).toBe(
+        buyEdge(9.25, 2, 14, "tcgplayer", DEFAULT_FEE_PROFILES).net
+      );
+    }
   });
 
   it("rejects NaN, zero, negative, and infinite prices server-side", async () => {

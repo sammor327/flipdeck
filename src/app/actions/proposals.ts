@@ -271,10 +271,23 @@ export async function editProposalPrice(id: string, newPrice: number): Promise<P
   const snapMedian = typeof snapshot.median90d === "number" && Number.isFinite(snapshot.median90d) ? snapshot.median90d : null;
   const median90d = stat?.median90d ?? snapMedian ?? price;
 
+  // A spread proposal's BUY resells at the arbitrage's own sell leg, recorded
+  // in the snapshot (leg prices are already USD-normalized) — proposal.
+  // marketplace is the BUY venue, so buyEdge at the median would describe a
+  // different trade than the one the user approves. Mirror the worker's
+  // creation math (computeSpread → round2(netPerCopy × quantity)); malformed
+  // or missing leg fields fall back to the single-market recompute.
+  const sellLegFee =
+    typeof snapshot.sellMarketplace === "string" ? profiles[snapshot.sellMarketplace as Marketplace] : undefined;
+  const sellLegPrice =
+    typeof snapshot.sellPrice === "number" && Number.isFinite(snapshot.sellPrice) ? snapshot.sellPrice : null;
+
   const netAfterFees =
     (ctx.p.side as Side) === "sell"
       ? netProceeds(price, ctx.p.quantity, fee).net
-      : buyEdge(price, ctx.p.quantity, median90d, marketplace, profiles).net;
+      : sellLegFee && sellLegPrice !== null
+        ? round2(round2(netProceeds(sellLegPrice, 1, sellLegFee).net - price) * ctx.p.quantity)
+        : buyEdge(price, ctx.p.quantity, median90d, marketplace, profiles).net;
 
   // Same conditional-claim pattern as approve/decline: only a still-pending,
   // unexpired row takes the edit — approved/declined/expired rows are never
