@@ -5,6 +5,7 @@
 //   4. fires TradeProposals + notifications for rules that trip (respecting cooldown)
 //   5. evaluates watchlist target prices (buy/sell targets fire the same way)
 //   6. expires stale pending proposals and records hindsight
+//   7. records hindsight for declined proposals whose horizon has passed
 //
 // Everything the tick decides is delegated to the pure modules (stats, evaluate,
 // fees, expiry) so this file is orchestration + I/O only.
@@ -150,6 +151,7 @@ export interface TickResult {
   proposalsCreated: number;
   rulesEvaluated: number;
   expired: number;
+  hindsights: number;
 }
 
 export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<TickResult> {
@@ -180,12 +182,16 @@ export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<Ti
   // 6. Expire stale proposals.
   const expired = await expireStaleProposals(now);
 
+  // 7. Record hindsight for declined proposals past their horizon.
+  const hindsights = await recordDeclinedHindsight(now);
+
   return {
     cards: cards.length,
     quotesInserted,
     proposalsCreated: evaluated.proposalsCreated + watchProposals,
     rulesEvaluated: evaluated.rulesEvaluated,
     expired,
+    hindsights,
   };
 }
 
@@ -522,4 +528,51 @@ export async function expireStaleProposals(now = new Date()): Promise<number> {
     });
   }
   return expired;
+}
+
+/**
+ * Record hindsight for declined proposals whose natural horizon (expiresAt)
+ * has passed — the "you missed / you dodged" note the History tab shows.
+ * Hindsight is measured at expiresAt rather than at decline time so it answers
+ * the same question the expiry sweep does: what happened over the window the
+ * proposal was live for. The undoUntil guard keeps the sweep from racing a
+ * live 5-second undo (declineProposal sets undoUntil = decidedAt +
+ * UNDO_WINDOW_MS and never nulls it after the window lapses, so the lte-now
+ * branch is what admits settled declines).
+ */
+export async function recordDeclinedHindsight(now = new Date()): Promise<number> {
+  const declined = await prisma.tradeProposal.findMany({
+    where: {
+      status: "declined",
+      outcomeNote: null,
+      expiresAt: { lte: now },
+      OR: [{ undoUntil: null }, { undoUntil: { lte: now } }],
+    },
+    include: { card: { include: { marketStat: true } } },
+  });
+  let hindsights = 0;
+  for (const p of declined) {
+    const current = p.card.marketStat?.currentPrice ?? p.proposedPrice;
+    const h = computeHindsight(p.side as Side, p.proposedPrice, current);
+    // Guarded claim: only note rows still declined and un-noted, so a proposal
+    // undone back to pending (or already noted by a concurrent sweep) since
+    // the findMany above is left alone and the hindsight notification fires
+    // exactly once per proposal.
+    const claim = await prisma.tradeProposal.updateMany({
+      where: { id: p.id, status: "declined", outcomeNote: null },
+      data: { outcomePrice: current, outcomeNote: h.note },
+    });
+    if (claim.count === 0) continue;
+    hindsights += claim.count;
+    await dispatchNotification({
+      userId: p.userId,
+      title: `Hindsight — ${p.card.name}`,
+      body: h.note,
+      kind: "hindsight",
+      proposalId: p.id,
+      deepLink: `${process.env.APP_URL || "http://localhost:3000"}/alerts`,
+      allowInQuietHours: false,
+    });
+  }
+  return hindsights;
 }
