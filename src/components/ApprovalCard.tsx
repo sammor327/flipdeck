@@ -54,7 +54,6 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
       setError(null);
       const res = await approveProposal(data.id);
       if (!res.ok) return setError(res.error ?? "Failed");
-      if (res.deepLink) window.open(res.deepLink, "_blank", "noopener,noreferrer");
       setDecision({ kind: "approved", until: res.undoUntil ?? Date.now() + UNDO_WINDOW_MS, deepLink: res.deepLink });
     });
 
@@ -75,6 +74,7 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
 
   if (decision) {
     const secs = Math.max(0, Math.ceil((decision.until - now) / 1000));
+    const listingLink = decision.kind === "approved" && decision.deepLink ? decision.deepLink : null;
     return (
       <div className="undo" role="status">
         {decision.kind === "approved" ? "✓" : "↓"}{" "}
@@ -82,7 +82,12 @@ export function ApprovalCard({ data, compact = false }: { data: ApprovalCardData
           {decision.kind === "approved" ? "Approved" : "Declined"} — <b>{data.card.name}</b>{" "}
           {decision.kind === "approved" ? `· ${data.execLabel.toLowerCase()}…` : ""}
         </span>
-        <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={doUndo} disabled={pending}>
+        {listingLink ? (
+          <a className="btn sm" style={{ marginLeft: "auto" }} href={listingLink} target="_blank" rel="noopener noreferrer">
+            Open listing ↗
+          </a>
+        ) : null}
+        <button className="btn sm ghost" style={listingLink ? undefined : { marginLeft: "auto" }} onClick={doUndo} disabled={pending}>
           Undo ({secs}s)
         </button>
       </div>
