@@ -29,17 +29,31 @@ async function main() {
   // eslint-disable-next-line no-console
   console.log(`[worker] started — ingesting every ${tickMs}ms. Ctrl+C to stop.`);
   let n = 0;
-  await tick(++n);
-  const timer = setInterval(() => {
-    tick(++n).catch((e) => console.error("[worker] tick error:", e));
-  }, tickMs);
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+  // Self-scheduling loop, not setInterval: the next tick is armed only after
+  // the previous one settles, so a tick slower than WORKER_TICK_MS delays its
+  // successor instead of stacking concurrent ticks.
+  const loop = () => {
+    timer = null;
+    tick(++n)
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error("[worker] tick error:", e);
+      })
+      .finally(() => {
+        if (!stopped) timer = setTimeout(loop, tickMs);
+      });
+  };
   const shutdown = async () => {
-    clearInterval(timer);
+    stopped = true;
+    if (timer) clearTimeout(timer);
     await prisma.$disconnect();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  loop();
 }
 
 main().catch(async (e) => {
