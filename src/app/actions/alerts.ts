@@ -1,32 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { ProposeSide, RuleScope, RuleTrigger } from "@/lib/constants";
 import type { RuleParams } from "@/lib/alerts/types";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { toJson } from "@/lib/json";
 import { HOUR_MS, minOver, moveOverWindow, type PricePointLite } from "@/lib/math";
+import { validateRuleInput, type CreateRuleInput } from "@/lib/ruleValidation";
 
-export interface CreateRuleInput {
-  name: string;
-  scope: RuleScope;
-  cardId?: string;
-  trigger: RuleTrigger;
-  threshold?: number;
-  windowHours?: number;
-  movePct?: number;
-  direction?: "up" | "down" | "either";
-  spreadPct?: number;
-  lookbackDays?: number;
-  action?: "notify" | "propose_trade";
-  proposeSide?: ProposeSide;
-  quantity?: number;
-  marketplace?: string;
-  cooldownMinutes?: number;
-  proposalExpiryMinutes?: number;
-  quietHoursRespected?: boolean;
-}
+export type { CreateRuleInput } from "@/lib/ruleValidation";
 
 function buildParams(input: CreateRuleInput): RuleParams {
   switch (input.trigger) {
@@ -47,27 +29,29 @@ function buildParams(input: CreateRuleInput): RuleParams {
 export async function createRule(input: CreateRuleInput) {
   const user = await getCurrentUser();
   if (!user) return { ok: false, error: "Not signed in" };
-  if (!input.name?.trim()) return { ok: false, error: "Name required" };
+  const validated = validateRuleInput(input);
+  if (!validated.ok) return { ok: false, error: validated.error };
+  const v = validated.value;
   const rule = await prisma.alertRule.create({
     data: {
       userId: user.id,
-      name: input.name.trim(),
-      scope: input.scope,
-      cardId: input.scope === "card" ? input.cardId ?? null : null,
-      trigger: input.trigger,
-      params: toJson(buildParams(input)),
-      action: input.action ?? "propose_trade",
-      proposeSide: input.proposeSide ?? "auto",
-      quantity: Math.max(1, input.quantity ?? 1),
-      marketplace: input.marketplace ?? null,
-      cooldownMinutes: input.cooldownMinutes ?? 360,
-      proposalExpiryMinutes: input.proposalExpiryMinutes ?? 30,
-      quietHoursRespected: input.quietHoursRespected ?? true,
+      name: v.name,
+      scope: v.scope,
+      cardId: v.scope === "card" ? v.cardId ?? null : null,
+      trigger: v.trigger,
+      params: toJson(buildParams(v)),
+      action: v.action ?? "propose_trade",
+      proposeSide: v.proposeSide ?? "auto",
+      quantity: v.quantity ?? 1,
+      marketplace: v.marketplace ?? null,
+      cooldownMinutes: v.cooldownMinutes ?? 360,
+      proposalExpiryMinutes: v.proposalExpiryMinutes ?? 30,
+      quietHoursRespected: v.quietHoursRespected ?? true,
       enabled: true,
     },
   });
   revalidatePath("/alerts");
-  if (input.cardId) revalidatePath(`/cards/${input.cardId}`);
+  if (v.cardId) revalidatePath(`/cards/${v.cardId}`);
   return { ok: true, id: rule.id };
 }
 
