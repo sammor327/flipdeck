@@ -299,3 +299,72 @@ describe("evaluateAllRules — per-user spread evaluation", () => {
     expect(calls.spreadQueries).toHaveLength(2); // but each rule batches its own card set
   });
 });
+
+describe("evaluateAllRules — overnight proposal actionability (cycle 10)", () => {
+  /** Owner sleeps 22:00 → 07:00; kill switch off, no spend cap. */
+  function quietSettings(overrides: Row = {}): Row {
+    return {
+      userId: "u1",
+      quietHoursEnabled: true,
+      quietHoursStart: 1320, // 22:00
+      quietHoursEnd: 420, //     07:00
+      pushEnabled: true,
+      digestMode: false,
+      killSwitch: false,
+      dailySpendCap: 0,
+      feeProfiles: null,
+      ...overrides,
+    };
+  }
+
+  /** A propose_trade rule that always fires (price 12 ≤ threshold 100 → buy). */
+  function buyRule(overrides: Row = {}): Row {
+    return rule({
+      action: "propose_trade",
+      trigger: "threshold_below",
+      params: JSON.stringify({ threshold: 100 }),
+      proposeSide: "buy",
+      proposalExpiryMinutes: 30,
+      ...overrides,
+    });
+  }
+
+  it("extends expiresAt to quiet-hours end + 30 min when a respecting rule fires overnight, and the push states the real expiry", async () => {
+    const now = new Date(2026, 6, 7, 23, 30); // inside the window, before midnight
+    state.rules = [buyRule({ quietHoursRespected: true })];
+    state.stats.set("c1", stat());
+    state.settings = quietSettings();
+
+    const { proposalsCreated } = await evaluateAllRules(now);
+
+    expect(proposalsCreated).toBe(1);
+    // Tomorrow 07:00 + 30 min grace — still pending when the morning flush lands.
+    expect(calls.proposalsCreated[0].expiresAt).toEqual(new Date(2026, 6, 8, 7, 30));
+    const input = vi.mocked(dispatchNotification).mock.calls[0][0];
+    expect(input.body).toContain("expires in 480 min"); // 23:30 → 07:30 is 8h, not the configured 30
+  });
+
+  it("keeps the configured expiry outside quiet hours", async () => {
+    const now = new Date(2026, 6, 7, 12, 0);
+    state.rules = [buyRule({ quietHoursRespected: true })];
+    state.stats.set("c1", stat());
+    state.settings = quietSettings();
+
+    await evaluateAllRules(now);
+
+    expect(calls.proposalsCreated[0].expiresAt).toEqual(new Date(now.getTime() + 30 * 60000));
+    expect(vi.mocked(dispatchNotification).mock.calls[0][0].body).toContain("expires in 30 min");
+  });
+
+  it("keeps the configured expiry when the rule breaks through quiet hours (push is not held)", async () => {
+    const now = new Date(2026, 6, 7, 23, 30);
+    state.rules = [buyRule({ quietHoursRespected: false })];
+    state.stats.set("c1", stat());
+    state.settings = quietSettings();
+
+    await evaluateAllRules(now);
+
+    expect(calls.proposalsCreated[0].expiresAt).toEqual(new Date(now.getTime() + 30 * 60000));
+    expect(vi.mocked(dispatchNotification).mock.calls[0][0].body).toContain("expires in 30 min");
+  });
+});
