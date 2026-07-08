@@ -1,10 +1,10 @@
 import { CardTable } from "@/components/CardTable";
 import { EmptyState } from "@/components/states";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { getSpreadRows } from "@/lib/queries";
 
 export default async function SpreadScannerPage() {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const rows = await getSpreadRows(user.id);
 
   return (

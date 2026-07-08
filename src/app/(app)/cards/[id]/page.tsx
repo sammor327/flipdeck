@@ -14,7 +14,7 @@ import {
   type GameSlug,
   type Marketplace,
 } from "@/lib/constants";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buildDeepLink } from "@/lib/execution";
 import { mergeFeeProfiles } from "@/lib/feeProfiles";
@@ -24,7 +24,7 @@ import { round2 } from "@/lib/math";
 import { SPREAD_FRESHNESS_MS } from "@/lib/stats";
 
 export default async function CardDetailPage({ params }: { params: { id: string } }) {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const card = await prisma.card.findUnique({ where: { id: params.id }, include: { game: true, marketStat: true } });
   if (!card) notFound();
 
