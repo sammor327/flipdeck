@@ -238,3 +238,26 @@ Fresh 4-critic sweep: 30 findings → 3 selected, 3 implemented, 3 approved,
    match the inventory summary strip. +8 tests.
 
 Tests: 193 → 227 passing.
+
+## Cycle 11 — 2026-07-08 ~07:17–07:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Spread rules propose the actual arbitrage** — a spread rule fired
+   "sell on tcgplayer at current price" regardless of which two markets
+   made the spread. Proposals now carry both legs (buy X @ $a → sell Y @
+   $b, net/copy after your fees), price the correct leg, deep-link to the
+   right marketplace, and the spend cap sees the real buy-leg cost. +4
+   tests.
+2. **Durable demo seed** — the demo died 25 minutes after seeding (all
+   proposals expired) and cross-market spreads went stale in 48h. Seed now
+   staggers 5 pending proposals (13min–6h) and lays 4 days of
+   cardmarket/eBay history; verified deterministic across runs and
+   bit-identical to old MarketStats.
+3. **Action feedback everywhere** — new `useActionStatus`/`InlineStatus`
+   primitive; SettingsForm no longer lies "✓ Saved" on failure, watch
+   button doesn't flip on error, target-cell edits show server errors
+   (plus the Escape-swallows-next-save bug fixed), Refresh prices reports
+   "+N quotes · M proposals". +4 tests.
+
+Tests: 227 → 235 passing.

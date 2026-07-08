@@ -5,8 +5,7 @@ reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
 or when rejected. Last rebuilt from the cycle-10 critique sweep.
 
 ## Engine / correctness
-- Spread-rule proposals should propose the actual arbitrage: pass the triggering UserSpread into createProposal (buy marketplace/price, netPerCopy-based net)
-- Honor UserSettings.defaultMarketplaces in createProposal and evaluateWatchTargets (or remove the dead knob and fix the dashboard copy)
+- Honor UserSettings.defaultMarketplaces in createProposal and evaluateWatchTargets (or remove the dead knob and fix the dashboard copy) — pair with the buysCommittedTodayFor dedupe (both touch tick.ts)
 - addWatch: run target prices through normalizeTarget (NaN/Infinity/negative currently persist and can spam proposals)
 - shippingFlat currency-unit fix (convert via toUsd or redefine as USD); USD-normalize cardmarket sale prices at the sell write boundary
 - Dedupe buysCommittedTodayFor (tick.ts private copy vs proposals.ts helper) into a shared module (cycle 10 follow-up)
@@ -19,13 +18,12 @@ or when rejected. Last rebuilt from the cycle-10 critique sweep.
 
 ## Features (bigger, may need own cycle)
 - Card search/ingest from providers (searchCards on the provider interface, create Card rows on demand, catalog-backed top-bar search with a real Ctrl/Cmd-K handler) — L, needs its own cycle; at minimum drop the dead ⌘K placeholder
-- Seed demo decay: stagger 4-5 pending-proposal expiries (2-6h), seed 3-4 days of cardmarket/eBay history so approvals and the spread scanner survive past seed+25min (prisma/seed.ts only, S — strong candidate)
 - Inventory edit panel: expose quantity/condition/tags/location (action already accepts them); add location to AddCardForm and the CSV import/export round-trip
 - First-run inventory onboarding empty state (Add your first card / Import CSV CTAs instead of 'No cards match')
 - Saved views in inventory (FEATURES #3) — persist named filter+sort combos in localStorage; add price-band and trend filters
 
 ## UX / UI
-- Shared toast/status primitive + check res.ok at every call site (SettingsForm '✓ Saved' on failure, TargetCell silent revert, WatchButton, AddCardForm, bulk actions, RefreshPrices result summary)
+- Extend useActionStatus/InlineStatus to remaining call sites: AddCardForm, bulk actions in InventoryTable
 - Confirmation + undo for bulk delete and rule delete; replace bulk-bar window.prompt with the inline ActionPanel pattern, show selection total value, Escape-to-clear
 - Card page: 'Sell mine' should open the real sell flow instead of a bare deep link; spread-panel advice links to RuleBuilder with trigger preselected; un-hardcode the 8% floor
 - Replace hand-rolled signed money/percent strings on the alerts attribution line and inventory summary with formatSignedMoney/formatSignedPercent/Delta
