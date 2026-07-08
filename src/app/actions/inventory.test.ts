@@ -83,6 +83,9 @@ const { db, prismaFake, resetDb } = vi.hoisted(() => {
       // read and the conditional claim.
       findUnique: async ({ where }: any) => db.userSettings.find((r) => r.userId === where.userId) ?? null,
     },
+    // Interactive transaction: hand the callback the same store. Atomicity is
+    // provided by the conditional claim inside, which is what these tests pin.
+    $transaction: async (fn: (tx: any) => Promise<any>) => fn(prismaFake),
   };
 
   const resetDb = () => {
@@ -96,7 +99,10 @@ vi.mock("@/lib/db", () => ({ prisma: prismaFake }));
 vi.mock("@/lib/auth", () => ({ getCurrentUser: async () => ({ id: "u1", email: "t@t.t", name: "T" }) }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 
-import { bulkList, listInventoryItem, sellInventoryItem, unlistInventoryItem } from "./inventory";
+import { DEFAULT_FEE_PROFILES } from "@/lib/constants";
+import { netProceeds } from "@/lib/fees";
+import { round2 } from "@/lib/math";
+import { bulkList, listInventoryItem, sellInventoryItem, unlistInventoryItem, updateInventoryItem } from "./inventory";
 
 function seedItem(overrides: Row = {}): Row {
   if (!db.portfolios.some((p) => p.id === "pf-1")) db.portfolios.push({ id: "pf-1", userId: "u1" });
@@ -152,6 +158,28 @@ describe("sellInventoryItem status guard", () => {
     expect(row).toEqual(before); // soldPrice/soldFees/soldAt/status untouched
   });
 
+  it("derives soldFees and net from the quantity as of the claim, not the pre-claim read", async () => {
+    const row = seedItem({ quantity: 2 });
+    // Simulate the interleaving: a concurrent quantity edit commits after
+    // ownItem()'s read but before the transaction claims the row. The fee math
+    // must use the fresh quantity re-read inside the transaction.
+    const originalTx = prismaFake.$transaction;
+    prismaFake.$transaction = async (fn: (tx: any) => Promise<any>) => {
+      row.quantity = 5;
+      prismaFake.$transaction = originalTx;
+      return originalTx(fn);
+    };
+    try {
+      const res = await sellInventoryItem(row.id, 20);
+      expect(res.ok).toBe(true);
+      const expected = netProceeds(20, 5, DEFAULT_FEE_PROFILES.tcgplayer);
+      expect(row.soldFees).toBe(round2(expected.feeAmount + expected.shipping));
+      expect((res as { net?: number }).net).toBe(expected.net);
+    } finally {
+      prismaFake.$transaction = originalTx;
+    }
+  });
+
   it("loses to a concurrent sale that lands between the read and the claim", async () => {
     const row = seedItem();
     // Simulate the other tab: the row flips to sold after ownItem() has read
@@ -165,6 +193,25 @@ describe("sellInventoryItem status guard", () => {
     expect(row.soldPrice).toBe(42); // the first sale's history survives
     expect(row.soldFees).toBe(6.5);
     expect(row.soldAt).toEqual(new Date("2026-01-01T00:00:00Z"));
+  });
+});
+
+describe("updateInventoryItem status guard", () => {
+  it("updates an owned row and still applies the quantity/costBasis clamps", async () => {
+    const row = seedItem();
+    const res = await updateInventoryItem(row.id, { quantity: 3.7, costBasis: -2, tags: "graded" });
+    expect(res).toEqual({ ok: true });
+    expect(row.quantity).toBe(3); // floored
+    expect(row.costBasis).toBe(0); // clamped to >= 0
+    expect(row.tags).toBe("graded");
+  });
+
+  it("returns 'Already sold' on a sold row and leaves it unchanged", async () => {
+    const row = soldRow();
+    const before = { ...row };
+    const res = await updateInventoryItem(row.id, { quantity: 10, costBasis: 1, condition: "LP", tags: "x" });
+    expect(res).toEqual({ ok: false, error: "Already sold" });
+    expect(row).toEqual(before); // realized-P/L inputs untouched
   });
 });
 

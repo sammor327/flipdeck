@@ -67,8 +67,11 @@ export async function updateInventoryItem(
   if (!ctx) return { ok: false, error: "Not found" };
   const condition = input.condition != null ? normalizeCondition(input.condition) : undefined;
   if (condition === null) return { ok: false, error: "Invalid condition" };
-  await prisma.inventoryItem.update({
-    where: { id },
+  // Conditional claim (same pattern as sell/list/unlist): a stale tab must not
+  // edit quantity/costBasis/condition on a sold row — that silently rewrites
+  // realized-P/L history while soldFees stays computed from the old values.
+  const claim = await prisma.inventoryItem.updateMany({
+    where: { id, status: { in: ["owned", "listed"] } },
     data: {
       quantity: input.quantity != null ? Math.max(1, Math.floor(input.quantity)) : undefined,
       condition,
@@ -77,6 +80,7 @@ export async function updateInventoryItem(
       location: input.location,
     },
   });
+  if (claim.count === 0) return { ok: false, error: "Already sold" };
   revalidatePath("/inventory");
   return { ok: true };
 }
@@ -126,23 +130,36 @@ export async function sellInventoryItem(id: string, soldPrice: number, marketpla
   if (!ctx) return { ok: false, error: "Not found" };
   const settings = await prisma.userSettings.findUnique({ where: { userId: ctx.user.id } });
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
-  const proceeds = netProceeds(soldPrice, ctx.item.quantity, profiles[marketplace]);
   // Conditional claim: only an owned/listed row may transition to "sold". A
   // re-sell from a stale tab must not overwrite soldPrice/soldFees/soldAt and
-  // rewrite realized-P/L history. ownItem() above handles auth + fee math; the
-  // claim is the gate.
-  const claim = await prisma.inventoryItem.updateMany({
-    where: { id, status: { in: ["owned", "listed"] } },
-    data: {
-      status: "sold",
-      soldPrice: round2(soldPrice),
-      soldFees: round2(proceeds.feeAmount + proceeds.shipping),
-      soldAt: new Date(),
-      listedPrice: null,
-      listedMarketplace: null,
-    },
+  // rewrite realized-P/L history. ownItem() above handles auth; the claim is
+  // the gate. Claim + fee math share one transaction, and the quantity is
+  // re-read AFTER the claim (same fresh-read pattern as approveProposal) so a
+  // concurrent quantity edit landing between ownItem()'s read and the claim
+  // can never persist soldFees computed from a stale quantity.
+  const proceeds = await prisma.$transaction(async (tx) => {
+    const claim = await tx.inventoryItem.updateMany({
+      where: { id, status: { in: ["owned", "listed"] } },
+      data: {
+        status: "sold",
+        soldPrice: round2(soldPrice),
+        soldAt: new Date(),
+        listedPrice: null,
+        listedMarketplace: null,
+      },
+    });
+    if (claim.count === 0) return null;
+    // Re-read the row we just claimed: the fee math must use the quantity as
+    // of the claim. Cannot be null — the claim matched it in this tx.
+    const fresh = (await tx.inventoryItem.findFirst({ where: { id } }))!;
+    const p = netProceeds(soldPrice, fresh.quantity, profiles[marketplace]);
+    await tx.inventoryItem.update({
+      where: { id },
+      data: { soldFees: round2(p.feeAmount + p.shipping) },
+    });
+    return p;
   });
-  if (claim.count === 0) return { ok: false, error: "Already sold" };
+  if (!proceeds) return { ok: false, error: "Already sold" };
   revalidatePath("/inventory");
   revalidatePath("/");
   return { ok: true, net: proceeds.net };
