@@ -48,8 +48,11 @@ export default async function AlertsPage({ searchParams }: { searchParams: { pro
   const user = (await getCurrentUser())!;
 
   const [pending, notifications, rules, history, proposals30] = await Promise.all([
+    // Past-expiry pending rows drop out of Approvals immediately; the worker
+    // sweep (not this read-only page) flips them to expired with hindsight,
+    // after which they surface in History.
     prisma.tradeProposal.findMany({
-      where: { userId: user.id, status: "pending" },
+      where: { userId: user.id, status: "pending", expiresAt: { gt: new Date() } },
       include: { card: { include: { game: true } } },
       orderBy: { expiresAt: "asc" },
     }),

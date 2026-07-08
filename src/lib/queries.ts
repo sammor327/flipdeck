@@ -253,13 +253,16 @@ export async function getPortfolioSeries(userId: string): Promise<PortfolioPoint
 }
 
 export async function getDashboardStats(userId: string) {
-  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  // Pending rows past expiresAt are excluded even before the worker sweep flips
+  // them — otherwise the tile overcounts and soonestExpiry can sit in the past.
   const [activeRules, firedThisWeek, actedThisWeek, pending, soonest] = await Promise.all([
     prisma.alertRule.count({ where: { userId, enabled: true } }),
     prisma.tradeProposal.count({ where: { userId, createdAt: { gte: weekAgo } } }),
     prisma.tradeProposal.count({ where: { userId, decidedAt: { gte: weekAgo }, status: { in: ["approved", "declined"] } } }),
-    prisma.tradeProposal.count({ where: { userId, status: "pending" } }),
-    prisma.tradeProposal.findFirst({ where: { userId, status: "pending" }, orderBy: { expiresAt: "asc" }, select: { expiresAt: true } }),
+    prisma.tradeProposal.count({ where: { userId, status: "pending", expiresAt: { gt: now } } }),
+    prisma.tradeProposal.findFirst({ where: { userId, status: "pending", expiresAt: { gt: now } }, orderBy: { expiresAt: "asc" }, select: { expiresAt: true } }),
   ]);
   return { activeRules, firedThisWeek, actedThisWeek, pending, soonestExpiry: soonest?.expiresAt ?? null };
 }

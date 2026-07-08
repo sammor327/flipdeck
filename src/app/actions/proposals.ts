@@ -156,15 +156,19 @@ export async function approveProposal(id: string): Promise<ProposalActionResult>
   if (ctx.p.status !== "pending") return { ok: false, error: `Already ${ctx.p.status}` };
 
   const now = new Date();
+  // expiresAt is authoritative even before the worker sweep flips the row — a
+  // stale tab or deep link must not approve a proposal that should have expired.
+  if (ctx.p.expiresAt.getTime() <= now.getTime()) return { ok: false, error: "Already expired" };
   const undoUntil = new Date(now.getTime() + UNDO_WINDOW_MS);
   // Claim the pending row atomically BEFORE any side effects — the conditional
   // updateMany is the gate that stops two racing approvals from both applying
-  // inventory effects. Claim + effects + undo record share one transaction so
-  // a crash mid-way rolls the claim back rather than stranding an approved row
-  // with no effects applied.
+  // inventory effects (expiresAt > now keeps the expiry check atomic too).
+  // Claim + effects + undo record share one transaction so a crash mid-way
+  // rolls the claim back rather than stranding an approved row with no effects
+  // applied.
   const claimed = await prisma.$transaction(async (tx) => {
     const claim = await tx.tradeProposal.updateMany({
-      where: { id, userId: ctx.user.id, status: "pending" },
+      where: { id, userId: ctx.user.id, status: "pending", expiresAt: { gt: now } },
       data: { status: "approved", decidedAt: now, executedAt: now, undoUntil },
     });
     if (claim.count !== 1) return false;
@@ -199,11 +203,13 @@ export async function declineProposal(id: string): Promise<ProposalActionResult>
   if (ctx.p.status !== "pending") return { ok: false, error: `Already ${ctx.p.status}` };
 
   const now = new Date();
+  // Same expiry rule as approve: past-expiry rows belong to the worker sweep.
+  if (ctx.p.expiresAt.getTime() <= now.getTime()) return { ok: false, error: "Already expired" };
   const undoUntil = new Date(now.getTime() + UNDO_WINDOW_MS);
   // Same conditional-claim pattern as approve: only the actor that flips the
-  // row off "pending" proceeds.
+  // row off "pending" (before it expires) proceeds.
   const claim = await prisma.tradeProposal.updateMany({
-    where: { id, userId: ctx.user.id, status: "pending" },
+    where: { id, userId: ctx.user.id, status: "pending", expiresAt: { gt: now } },
     data: { status: "declined", decidedAt: now, undoUntil },
   });
   if (claim.count !== 1) {

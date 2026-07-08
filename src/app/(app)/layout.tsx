@@ -9,8 +9,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const user = await getCurrentUser();
   if (!user) redirect("/signin");
 
+  // expiresAt is authoritative: a pending row past its expiry is not actionable
+  // even if the worker sweep hasn't flipped it yet.
+  const now = new Date();
   const [approvals, latest, invDistinct, watchCount, rulesEnabled] = await Promise.all([
-    prisma.tradeProposal.count({ where: { userId: user.id, status: "pending" } }),
+    prisma.tradeProposal.count({ where: { userId: user.id, status: "pending", expiresAt: { gt: now } } }),
     prisma.pricePoint.findFirst({ orderBy: { capturedAt: "desc" }, select: { capturedAt: true } }),
     prisma.inventoryItem.findMany({
       where: { portfolio: { userId: user.id }, status: { in: ["owned", "listed"] } },
