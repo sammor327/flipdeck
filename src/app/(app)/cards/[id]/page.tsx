@@ -21,6 +21,7 @@ import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { bestSpread, netProceeds, toUsd, type MarketQuote } from "@/lib/fees";
 import { formatMoney, formatRelativeTime } from "@/lib/format";
 import { round2 } from "@/lib/math";
+import { SPREAD_FRESHNESS_MS } from "@/lib/stats";
 
 export default async function CardDetailPage({ params }: { params: { id: string } }) {
   const user = (await getCurrentUser())!;
@@ -66,6 +67,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
       sold: sold?.price ?? null,
       listings: primary.listingCount ?? null,
       netIfSold,
+      capturedAt: primary.capturedAt,
     };
   }).filter(Boolean) as {
     id: Marketplace;
@@ -76,9 +78,14 @@ export default async function CardDetailPage({ params }: { params: { id: string 
     sold: number | null;
     listings: number | null;
     netIfSold: number | null;
+    capturedAt: Date;
   }[];
 
+  // Stale quotes still show in the price table below, but they can't feed the
+  // spread panel — a weeks-old capture pairing with a live quote fabricates arbitrage.
+  const nowMs = Date.now();
   const quotes: MarketQuote[] = marketplaceRows
+    .filter((r) => nowMs - r.capturedAt.getTime() <= SPREAD_FRESHNESS_MS)
     .map((r) => (r.market ?? r.sold ? { marketplace: r.id, price: (r.market ?? r.sold)!, currency: r.currency } : null))
     .filter(Boolean) as MarketQuote[];
   const spread = bestSpread(quotes, profiles);
