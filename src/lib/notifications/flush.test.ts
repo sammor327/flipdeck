@@ -61,7 +61,7 @@ vi.mock("../db", () => ({
 // Keyless web push → deliverToUser always selects the console channel, whose
 // mock records every payload it is handed.
 vi.mock("./webpush", () => ({
-  webPushChannel: { id: "webpush", isConfigured: () => false, deliver: async () => false },
+  webPushChannel: { id: "webpush", isConfigured: () => false, deliver: async () => "failed" },
 }));
 vi.mock("./console", () => ({
   consoleChannel: {
@@ -69,7 +69,7 @@ vi.mock("./console", () => ({
     isConfigured: () => true,
     deliver: async (_sub: unknown, payload: Row) => {
       deliveries.push(payload);
-      return true;
+      return "ok";
     },
   },
 }));

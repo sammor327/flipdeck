@@ -16,9 +16,11 @@ export function channelFor(settings: { pushEnabled: boolean } | null): Notificat
 
 /**
  * Deliver one payload to a user over their selected channel. Every push
- * subscription is attempted; with none registered (or push disabled/keyless)
- * the console channel is the guaranteed fallback. Shared by
- * dispatchNotification and the quiet-hours flush.
+ * subscription is attempted; subscriptions the push service reports gone
+ * (HTTP 404/410) are pruned so they are never re-attempted. When nothing
+ * delivers — none registered, all dead, or push disabled/keyless — the console
+ * channel is the guaranteed fallback and the notification counts as delivered.
+ * Shared by dispatchNotification and the quiet-hours flush.
  */
 export async function deliverToUser(
   userId: string,
@@ -29,12 +31,20 @@ export async function deliverToUser(
   let delivered = false;
   if (channel === "webpush") {
     const subs = await prisma.pushSubscription.findMany({ where: { userId } });
+    const goneEndpoints: string[] = [];
     for (const s of subs) {
-      const ok = await webPushChannel.deliver({ endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }, payload);
-      delivered = delivered || ok;
+      const result = await webPushChannel.deliver({ endpoint: s.endpoint, p256dh: s.p256dh, auth: s.auth }, payload);
+      if (result === "ok") delivered = true;
+      else if (result === "gone") goneEndpoints.push(s.endpoint);
     }
-    if (subs.length === 0) {
-      // No browser subscription yet — echo to the console so dev still sees it.
+    if (goneEndpoints.length > 0) {
+      // 404/410 endpoints never come back — delete them so every future
+      // notification stops re-attempting dead subscriptions.
+      await prisma.pushSubscription.deleteMany({ where: { endpoint: { in: goneEndpoints }, userId } });
+    }
+    if (!delivered) {
+      // No subscription delivered (none registered, or all failed/gone) —
+      // echo to the console so dev still sees it.
       await consoleChannel.deliver({ endpoint: "", p256dh: "", auth: "" }, payload);
       delivered = true;
     }
