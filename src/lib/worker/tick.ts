@@ -15,6 +15,7 @@ import { evaluateRule } from "../alerts/evaluate";
 import type { EvalContext, RuleParams } from "../alerts/types";
 import { computeHindsight } from "../alerts/expiry";
 import { buyEdge, netProceeds } from "../fees";
+import { checkProposalGuardrails } from "../guardrails";
 import { fromJson, toJson } from "../json";
 import { HOUR_MS, minOver, moveOverWindow, round2, type PricePointLite } from "../math";
 import { resolveExecution } from "../execution";
@@ -247,6 +248,9 @@ async function createProposal(
   const card = await prisma.card.findUnique({ where: { id: cardId }, include: { game: true } });
   if (!card) return null;
 
+  // Safety guardrails (kill switch + daily spend cap). No settings row means no blocks.
+  const settings = await prisma.userSettings.findUnique({ where: { userId: rule.userId } });
+
   const marketplace = (rule.marketplace as Marketplace) || "tcgplayer";
   const price = round2(stat.currentPrice);
 
@@ -262,6 +266,26 @@ async function createProposal(
     quantity = Math.min(quantity, owned);
     const totalCost = holdings.reduce((s, h) => s + h.costBasis * h.quantity, 0);
     costBasis = owned > 0 ? round2(totalCost / owned) : null;
+  }
+
+  // Spend already committed today: pending + approved buys created since server-local
+  // midnight (the cap is a per-calendar-day limit in the server's timezone).
+  let buysCommittedToday = 0;
+  if (side === "buy") {
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const todaysBuys = await prisma.tradeProposal.findMany({
+      where: { userId: rule.userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday } },
+      select: { proposedPrice: true, quantity: true },
+    });
+    buysCommittedToday = todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
+  }
+
+  // Blocked fires create nothing and do NOT start the rule's cooldown (no lastFiredAt update).
+  const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);
+  if (guard.blocked) {
+    // eslint-disable-next-line no-console
+    console.log(`[worker] guardrail skipped ${side} proposal (rule "${rule.name}", ${card.name}): ${guard.reason}`);
+    return null;
   }
 
   const fee = DEFAULT_FEE_PROFILES[marketplace];

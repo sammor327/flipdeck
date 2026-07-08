@@ -18,7 +18,9 @@ export async function dispatchNotification(input: NotifyInput) {
         now
       )
     : false;
-  const held = quiet && !input.allowInQuietHours;
+  // Kill switch pauses ALL delivery (including expiry notices); like quiet hours,
+  // held notifications still land in NotificationLog with deliveredAt: null.
+  const held = (quiet && !input.allowInQuietHours) || settings?.killSwitch === true;
 
   const usePush = webPushChannel.isConfigured() && (settings?.pushEnabled ?? true);
   const channel = usePush ? "webpush" : "console";
