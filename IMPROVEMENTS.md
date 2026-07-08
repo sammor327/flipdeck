@@ -194,3 +194,22 @@ Tests: 136 → 156 passing.
    persisted via conditional claim so it can't race approve/expiry. +5 tests.
 
 Tests: 156 → 184 passing.
+
+## Cycle 9 — 2026-07-08 ~05:17–05:35 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **`requireUser()`** — an expired session hit `(await getCurrentUser())!`
+   non-null assertions and crashed to the error boundary; all 8 app pages +
+   layout now redirect to /signin. Verified at runtime: signed-out hits 307
+   to /signin, signed-in unchanged.
+2. **Rule-form errors surfaced** — cycle 8's validation errors now render
+   inline in RuleBuilder and NewRuleForm (form stays open, inputs intact,
+   stale errors cleared on edit/reopen).
+3. **Provider rate limiting** — the never-wired MemoryRateLimiter now wraps
+   all real provider fetches (per-API budgets: scryfall 8/s, pokemontcg
+   2/s, ygoprodeck 5/s, lorcast 5/s; starvation falls back to mock data
+   after 4s instead of hammering). Dead `dirtyCards` queue deleted
+   end-to-end. +9 tests.
+
+Tests: 184 → 193 passing.
