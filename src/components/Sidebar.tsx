@@ -11,6 +11,7 @@ const NAV = [
   { href: "/movers", icon: "↗", label: "Top Movers" },
   { href: "/alerts", icon: "⚡", label: "Alerts & Approvals", badgeKey: "approvals" as const },
   { href: "/spread", icon: "⇄", label: "Spread Scanner" },
+  { href: "/analytics", icon: "◔", label: "Analytics" },
   { href: "/releases", icon: "◷", label: "Releases & News" },
   { href: "/settings", icon: "⚙", label: "Settings" },
 ];
