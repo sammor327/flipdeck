@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import type { RuleParams } from "@/lib/alerts/types";
 import { getCurrentUser } from "@/lib/auth";
+import type { RuleScope } from "@/lib/constants";
 import { prisma } from "@/lib/db";
 import { toJson } from "@/lib/json";
 import { HOUR_MS, minOver, moveOverWindow, type PricePointLite } from "@/lib/math";
@@ -53,6 +54,40 @@ export async function createRule(input: CreateRuleInput) {
   revalidatePath("/alerts");
   if (v.cardId) revalidatePath(`/cards/${v.cardId}`);
   return { ok: true, id: rule.id };
+}
+
+export async function updateRule(id: string, input: CreateRuleInput) {
+  const user = await getCurrentUser();
+  if (!user) return { ok: false, error: "Not signed in" };
+  const rule = await prisma.alertRule.findFirst({ where: { id, userId: user.id } });
+  if (!rule) return { ok: false, error: "Not found" };
+  // Scope and card binding aren't editable from the form; merge them from the
+  // existing row so card-scoped rules revalidate cleanly without the client
+  // ever seeing (or being able to change) them.
+  const validated = validateRuleInput({ ...input, scope: rule.scope as RuleScope, cardId: rule.cardId ?? undefined });
+  if (!validated.ok) return { ok: false, error: validated.error };
+  const v = validated.value;
+  await prisma.alertRule.update({
+    where: { id },
+    data: {
+      name: v.name,
+      trigger: v.trigger,
+      params: toJson(buildParams(v)),
+      action: v.action ?? "propose_trade",
+      proposeSide: v.proposeSide ?? "auto",
+      // Knobs the form doesn't send keep their current values.
+      quantity: v.quantity ?? rule.quantity,
+      marketplace: v.marketplace ?? rule.marketplace,
+      cooldownMinutes: v.cooldownMinutes ?? rule.cooldownMinutes,
+      proposalExpiryMinutes: v.proposalExpiryMinutes ?? rule.proposalExpiryMinutes,
+      quietHoursRespected: v.quietHoursRespected ?? rule.quietHoursRespected,
+      // enabled and lastFiredAt are intentionally untouched: editing a rule
+      // keeps its id-keyed attribution and its cooldown clock intact.
+    },
+  });
+  revalidatePath("/alerts");
+  if (rule.cardId) revalidatePath(`/cards/${rule.cardId}`);
+  return { ok: true };
 }
 
 export async function toggleRule(id: string) {
