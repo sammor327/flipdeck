@@ -138,10 +138,32 @@ export interface TickResult {
   hindsights: number;
 }
 
-export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<TickResult> {
+// Single-flight guard. runTick is reachable from three entry points — the
+// standalone loop (run.ts), the simulateTick server action, and
+// POST /api/worker/tick — with nothing stopping them from overlapping in one
+// process. A call that arrives while a tick is in flight coalesces onto the
+// running tick's promise instead of starting a second one. Coalescing ignores
+// `fastLaneOnly`: a fast-lane request that joins a full tick gets a superset of
+// the work (and vice versa gets the fast lane's subset), which is an acceptable
+// trade for never running two ticks at once. Cross-process overlap (standalone
+// worker vs. web process) is handled by the DB-level claims below, not here.
+let inFlight: Promise<TickResult> | null = null;
+
+export function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<TickResult> {
+  if (inFlight) return inFlight;
+  inFlight = runTickBody(opts).finally(() => {
+    // Reset in a finally so a rejected tick can't wedge the guard forever.
+    inFlight = null;
+  });
+  return inFlight;
+}
+
+async function runTickBody(opts: { fastLaneOnly?: boolean } = {}): Promise<TickResult> {
   const now = new Date();
 
-  // 1–2. Ingest + recompute stats.
+  // 1–2. Ingest + recompute stats. Each card is isolated: one card whose
+  // provider fetch or DB write throws must not abort the tick (rules, watch
+  // targets, expiry, and hindsight sweeps below still need to run).
   let cardWhere: object = {};
   if (opts.fastLaneOnly) {
     cardWhere = { id: { in: [...(await fastLaneCardIds())] } };
@@ -149,9 +171,14 @@ export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<Ti
   const cards = await loadCards(cardWhere);
   let quotesInserted = 0;
   for (const card of cards) {
-    quotesInserted += await ingestCard(card, now);
-    await recomputeStat(card.id, now);
-    await dirtyCards.add(card.id);
+    try {
+      quotesInserted += await ingestCard(card, now);
+      await recomputeStat(card.id, now);
+      await dirtyCards.add(card.id);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[worker] card ${card.id} ingest failed:`, err);
+    }
   }
 
   // 3–4. Evaluate rules, fire proposals.
@@ -187,6 +214,26 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
   for (const rule of rules) {
     try {
       const cardIds = await resolveRuleCardIds(rule);
+
+      // Conditional cooldown claim. The in-process single-flight guard cannot
+      // cover two processes (standalone worker + a web-process simulateTick)
+      // racing the same rule, so before any fire we compare-and-set
+      // lastFiredAt at the DB: only the actor whose update matches the value
+      // it read at evaluation time (null for never-fired rules — Prisma
+      // matches that correctly) wins the fire; a lost claim means the other
+      // actor's fire stands. `claimToken` starts at the evaluation read and
+      // advances to `now` on a win so a multi-card rule keeps firing within
+      // this tick exactly as before.
+      let claimToken = rule.lastFiredAt;
+      const claimCooldown = async (): Promise<boolean> => {
+        const claim = await prisma.alertRule.updateMany({
+          where: { id: rule.id, lastFiredAt: claimToken },
+          data: { lastFiredAt: now },
+        });
+        if (claim.count === 0) return false;
+        claimToken = now;
+        return true;
+      };
 
       // Spread rules evaluate the OWNER's after-fee spread, not the cached
       // MarketStat.bestSpreadPct (computeMarketStat derives that with
@@ -251,6 +298,11 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
         if (rule.action === "notify") {
           const card = await prisma.card.findUnique({ where: { id: cardId }, select: { name: true } });
           if (!card) continue;
+          // Claim the cooldown before dispatching — a lost claim means another
+          // process already fired this rule, so send nothing. A won claim
+          // starts the cooldown: the lastFiredAt gate in evaluateRule is what
+          // keeps notify rules from spamming.
+          if (!(await claimCooldown())) continue;
           await dispatchNotification({
             userId: rule.userId,
             title: `Alert — ${card.name} ${formatDelta(stat.delta24hPct ?? 0, "percent")}`,
@@ -260,9 +312,6 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
             ruleId: rule.id,
             allowInQuietHours: !rule.quietHoursRespected,
           });
-          // Mark the rule fired so its cooldown starts — the lastFiredAt gate
-          // in evaluateRule is what keeps notify rules from spamming.
-          await prisma.alertRule.update({ where: { id: rule.id }, data: { lastFiredAt: now } });
           continue;
         }
 
@@ -272,7 +321,7 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
         });
         if (existing) continue;
 
-        const created = await createProposal(rule, cardId, result.side, stat, result.reason ?? rule.name, result.evidence, now);
+        const created = await createProposal(rule, cardId, result.side, stat, result.reason ?? rule.name, result.evidence, now, claimCooldown);
         if (created) proposalsCreated++;
       }
     } catch (err) {
@@ -430,7 +479,13 @@ async function buysCommittedTodayFor(userId: string, now: Date): Promise<number>
   return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
 }
 
-/** Fire a propose_trade rule: guardrails, holdings gate, proposal + notification. */
+/**
+ * Fire a propose_trade rule: guardrails, holdings gate, cooldown claim,
+ * proposal + notification. `claim` is the caller's conditional lastFiredAt
+ * compare-and-set (see evaluateAllRules); it runs strictly AFTER the guardrail
+ * check so blocked fires never consume the rule's cooldown, and strictly BEFORE
+ * the create so a lost claim (another process fired first) creates nothing.
+ */
 async function createProposal(
   rule: { id: string; userId: string; name: string; quantity: number; marketplace: string | null; proposalExpiryMinutes: number; quietHoursRespected: boolean },
   cardId: string,
@@ -438,7 +493,8 @@ async function createProposal(
   stat: { currentPrice: number; median90d: number | null; delta24hPct: number | null; delta7dPct: number | null; bestSpreadPct: number | null; low90d: number | null; listingCount: number | null },
   reason: string,
   evidence: Record<string, string | number>,
-  now: Date
+  now: Date,
+  claim: () => Promise<boolean>
 ) {
   const card = await prisma.card.findUnique({ where: { id: cardId }, include: { game: true } });
   if (!card) return null;
@@ -465,13 +521,18 @@ async function createProposal(
 
   const buysCommittedToday = side === "buy" ? await buysCommittedTodayFor(rule.userId, now) : 0;
 
-  // Blocked fires create nothing and do NOT start the rule's cooldown (no lastFiredAt update).
+  // Blocked fires create nothing and do NOT start the rule's cooldown (they
+  // return before the claim below ever touches lastFiredAt).
   const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);
   if (guard.blocked) {
     // eslint-disable-next-line no-console
     console.log(`[worker] guardrail skipped ${side} proposal (rule "${rule.name}", ${card.name}): ${guard.reason}`);
     return null;
   }
+
+  // Conditional cooldown claim: losing it means another process fired this
+  // rule between our evaluation read and here — create nothing, notify nobody.
+  if (!(await claim())) return null;
 
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
   const fee = profiles[marketplace];
@@ -515,8 +576,6 @@ async function createProposal(
       expiresAt,
     },
   });
-
-  await prisma.alertRule.update({ where: { id: rule.id }, data: { lastFiredAt: now } });
 
   const delta = stat.delta24hPct ?? 0;
   const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${card.name} ${formatDelta(delta, "percent")}`;

@@ -38,9 +38,18 @@ vi.mock("../db", () => ({
   prisma: {
     alertRule: {
       findMany: async () => state.rules,
-      update: async (args: any) => {
+      // The conditional cooldown claim (compare-and-set on lastFiredAt).
+      // state.rules is both the read snapshot and the DB truth here, so claims
+      // always win — cross-process lost-claim races are covered in tick.test.ts.
+      updateMany: async (args: any) => {
         calls.ruleUpdates.push(args);
-        return args;
+        const hits = state.rules.filter(
+          (r) =>
+            r.id === args.where.id &&
+            (r.lastFiredAt?.getTime() ?? null) === (args.where.lastFiredAt?.getTime() ?? null)
+        );
+        for (const r of hits) Object.assign(r, args.data);
+        return { count: hits.length };
       },
     },
     marketStat: {
@@ -164,8 +173,9 @@ describe("evaluateAllRules — notify-only rules", () => {
     expect(input.title).toContain("Test Card");
     expect(input.deepLink).toContain("/cards/c1");
     expect(input.proposalId).toBeUndefined();
-    // Cooldown starts: lastFiredAt is stamped exactly as createProposal does.
-    expect(calls.ruleUpdates).toEqual([{ where: { id: "r1" }, data: { lastFiredAt: now } }]);
+    // Cooldown starts via the conditional claim: the where carries the
+    // lastFiredAt read at evaluation time (null — never fired).
+    expect(calls.ruleUpdates).toEqual([{ where: { id: "r1", lastFiredAt: null }, data: { lastFiredAt: now } }]);
   });
 
   it("notify sell rule with zero holdings still notifies (no holdings gate)", async () => {
@@ -251,7 +261,7 @@ describe("evaluateAllRules — per-user spread evaluation", () => {
     expect(proposal).toMatchObject({ userId: "u1", cardId: "c1", ruleId: "r1", side: "buy", status: "pending" });
     // The evidence carries the owner's spread ($10 → $15 minus 13.25% eBay fees = +30.1%).
     expect(JSON.parse(proposal.priceSnapshot)).toMatchObject({ spreadPct: 30.1 });
-    expect(calls.ruleUpdates).toEqual([{ where: { id: "r1" }, data: { lastFiredAt: now } }]);
+    expect(calls.ruleUpdates).toEqual([{ where: { id: "r1", lastFiredAt: null }, data: { lastFiredAt: now } }]);
     expect(vi.mocked(dispatchNotification)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(dispatchNotification).mock.calls[0][0]).toMatchObject({ kind: "proposal", proposalId: "tp-1", ruleId: "r1" });
   });

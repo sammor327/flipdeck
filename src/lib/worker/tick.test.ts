@@ -1,15 +1,41 @@
-// Race-safety tests for the proposal sweeps: expireStaleProposals and
-// recordDeclinedHindsight must claim each row with a guarded updateMany, so
-// they can never flip a proposal whose status changed (approved! undone!)
-// between their read and their write — and must not send a notification for
-// rows they did not transition.
+// Race-safety and robustness tests for the worker tick.
+//
+// Sweeps (expireStaleProposals, recordDeclinedHindsight): must claim each row
+// with a guarded updateMany, so they can never flip a proposal whose status
+// changed (approved! undone!) between their read and their write — and must
+// not send a notification for rows they did not transition.
+//
+// Rule fires (evaluateAllRules): must claim the rule's cooldown with a guarded
+// lastFiredAt updateMany before creating/dispatching, so two processes that
+// both pass the in-memory dedup cannot double-fire — and a guardrail block
+// must never consume the cooldown.
+//
+// runTick: single-flight (concurrent calls coalesce onto one tick) and
+// per-card error isolation (one bad card cannot abort the tick).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = Record<string, any>;
 
-const { state } = vi.hoisted(() => ({
+const { state, db, providers } = vi.hoisted(() => ({
   state: { rows: [] as Row[], view: [] as Row[] },
+  db: {
+    cards: [] as Row[],
+    marketStats: [] as Row[],
+    // Like state.rows/state.view for proposals: ruleView is the read snapshot
+    // evaluateAllRules' findMany returns, ruleRows is the DB truth the guarded
+    // lastFiredAt claim runs against. Divergence between the two stages the
+    // cross-process race (another actor fired between our read and our claim).
+    ruleRows: [] as Row[],
+    ruleView: [] as Row[],
+    settings: null as Row | null,
+    cardLoads: 0,
+    failNextCardLoad: false,
+    proposalSeq: 0,
+  },
+  providers: {
+    fetchQuotes: (async () => []) as (card: { id: string }) => Promise<any[]>,
+  },
 }));
 
 vi.mock("../db", () => ({
@@ -32,9 +58,62 @@ vi.mock("../db", () => ({
         for (const r of hits) Object.assign(r, data);
         return { count: hits.length };
       },
+      // Pending-dedup read in evaluateAllRules — plain equality is all it uses.
+      findFirst: async ({ where }: any) =>
+        state.rows.find((r) => Object.entries(where).every(([k, v]) => r[k] === v)) ?? null,
+      create: async ({ data }: any) => {
+        const row = { id: `tp-${++db.proposalSeq}`, createdAt: new Date(), ...data };
+        state.rows.push(row);
+        return row;
+      },
     },
+    alertRule: {
+      findMany: async () => db.ruleView,
+      // The conditional cooldown claim: a compare-and-set on lastFiredAt
+      // (null-vs-null and Date-vs-Date both compare like Prisma's equality).
+      updateMany: async ({ where, data }: any) => {
+        const hits = db.ruleRows.filter((r) => r.id === where.id && dateEquals(r.lastFiredAt, where.lastFiredAt));
+        for (const r of hits) Object.assign(r, data);
+        return { count: hits.length };
+      },
+    },
+    card: {
+      findMany: async () => {
+        db.cardLoads++;
+        if (db.failNextCardLoad) {
+          db.failNextCardLoad = false;
+          throw new Error("card load failed");
+        }
+        return db.cards;
+      },
+      findUnique: async ({ where }: any) => db.cards.find((c) => c.id === where.id) ?? null,
+    },
+    pricePoint: {
+      findMany: async () => [],
+      createMany: async ({ data }: any) => ({ count: data.length }),
+    },
+    marketStat: {
+      findUnique: async ({ where }: any) => db.marketStats.find((s) => s.cardId === where.cardId) ?? null,
+      upsert: async () => ({}),
+    },
+    userSettings: { findUnique: async () => db.settings },
+    watchlistItem: { findMany: async () => [] },
+    inventoryItem: { findMany: async () => [] },
   },
 }));
+
+vi.mock("../providers", () => ({
+  providerFor: () => ({
+    id: "test",
+    supports: () => true,
+    fetchQuotes: (card: any) => providers.fetchQuotes(card),
+  }),
+}));
+
+function dateEquals(a: Date | null | undefined, b: Date | null | undefined): boolean {
+  if (a == null || b == null) return a == null && b == null;
+  return a.getTime() === b.getTime();
+}
 
 function whereMatches(row: Row, where: Record<string, any>): boolean {
   for (const [key, cond] of Object.entries(where)) {
@@ -59,7 +138,7 @@ function whereMatches(row: Row, where: Record<string, any>): boolean {
 vi.mock("../notifications/dispatch", () => ({ dispatchNotification: vi.fn(async () => undefined) }));
 
 import { dispatchNotification } from "../notifications/dispatch";
-import { expireStaleProposals, recordDeclinedHindsight } from "./tick";
+import { evaluateAllRules, expireStaleProposals, recordDeclinedHindsight, runTick } from "./tick";
 
 function row(id: string, status: string): Row {
   return {
@@ -78,6 +157,14 @@ function row(id: string, status: string): Row {
 beforeEach(() => {
   state.rows = [];
   state.view = [];
+  db.cards = [];
+  db.marketStats = [];
+  db.ruleRows = [];
+  db.ruleView = [];
+  db.settings = null;
+  db.cardLoads = 0;
+  db.failNextCardLoad = false;
+  providers.fetchQuotes = async () => [];
   vi.mocked(dispatchNotification).mockClear();
 });
 
@@ -207,5 +294,197 @@ describe("recordDeclinedHindsight", () => {
     expect(undone.outcomeNote).toBeNull();
     expect(vi.mocked(dispatchNotification)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(dispatchNotification).mock.calls[0][0]).toMatchObject({ proposalId: "tp-1", kind: "hindsight" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateAllRules: the conditional lastFiredAt cooldown claim.
+// ---------------------------------------------------------------------------
+
+function stageCard(id: string): Row {
+  const card = {
+    id,
+    name: `Card ${id}`,
+    setCode: "SET",
+    setName: "Test Set",
+    collectorNumber: "1",
+    finish: "nonfoil",
+    scryfallId: null,
+    tcgplayerId: null,
+    cardmarketId: null,
+    pokemonTcgId: null,
+    ygoprodeckId: null,
+    game: { slug: "mtg" },
+  };
+  db.cards.push(card);
+  return card;
+}
+
+function stageStat(cardId: string, currentPrice = 10): Row {
+  const stat = {
+    cardId,
+    currentPrice,
+    median90d: currentPrice,
+    delta24hPct: 0,
+    delta7dPct: 0,
+    bestSpreadPct: null,
+    low90d: currentPrice,
+    listingCount: 3,
+  };
+  db.marketStats.push(stat);
+  return stat;
+}
+
+/** An enabled card-scoped rule that always fires (price 10 ≤ threshold 100 → buy). */
+function firingRule(id: string, cardId: string, overrides: Partial<Row> = {}): Row {
+  return {
+    id,
+    userId: "u1",
+    name: `Rule ${id}`,
+    enabled: true,
+    action: "propose_trade",
+    trigger: "threshold_below",
+    params: JSON.stringify({ threshold: 100 }),
+    proposeSide: "buy",
+    scope: "card",
+    cardId,
+    cooldownMinutes: 60,
+    lastFiredAt: null,
+    quantity: 1,
+    marketplace: "tcgplayer",
+    proposalExpiryMinutes: 30,
+    quietHoursRespected: true,
+    ...overrides,
+  };
+}
+
+describe("evaluateAllRules cooldown claim", () => {
+  it("a won claim creates the proposal, notifies, and starts the cooldown", async () => {
+    stageCard("c1");
+    stageStat("c1");
+    const rule = firingRule("r1", "c1");
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const now = new Date();
+    const res = await evaluateAllRules(now);
+    expect(res).toEqual({ rulesEvaluated: 1, proposalsCreated: 1 });
+    expect(state.rows).toHaveLength(1);
+    expect(state.rows[0]).toMatchObject({ ruleId: "r1", cardId: "c1", side: "buy", status: "pending" });
+    expect(db.ruleRows[0].lastFiredAt).toEqual(now);
+    expect(vi.mocked(dispatchNotification)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchNotification).mock.calls[0][0]).toMatchObject({ kind: "proposal", ruleId: "r1" });
+  });
+
+  it("a lost claim creates no proposal and sends no notification", async () => {
+    stageCard("c1");
+    stageStat("c1");
+    const read = firingRule("r1", "c1", { lastFiredAt: null }); // evaluation read: never fired
+    const otherActorFiredAt = new Date();
+    db.ruleView = [read];
+    // Another process (standalone worker vs. web simulateTick) fired the rule
+    // between our evaluation read and our claim.
+    db.ruleRows = [{ ...read, lastFiredAt: otherActorFiredAt }];
+
+    const res = await evaluateAllRules(new Date());
+    expect(res).toEqual({ rulesEvaluated: 1, proposalsCreated: 0 });
+    expect(state.rows).toHaveLength(0);
+    expect(vi.mocked(dispatchNotification)).not.toHaveBeenCalled();
+    // The loser must not clobber the winner's cooldown either.
+    expect(db.ruleRows[0].lastFiredAt).toEqual(otherActorFiredAt);
+  });
+
+  it("a lost claim on a notify-only rule dispatches nothing", async () => {
+    stageCard("c1");
+    stageStat("c1");
+    const read = firingRule("r1", "c1", { action: "notify", lastFiredAt: null });
+    db.ruleView = [read];
+    db.ruleRows = [{ ...read, lastFiredAt: new Date() }]; // another actor fired after our read
+
+    await evaluateAllRules(new Date());
+    expect(vi.mocked(dispatchNotification)).not.toHaveBeenCalled();
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it("a guardrail-blocked fire does not consume the rule cooldown", async () => {
+    stageCard("c1");
+    stageStat("c1");
+    db.settings = { killSwitch: true, dailySpendCap: 0, feeProfiles: null };
+    const rule = firingRule("r1", "c1");
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await evaluateAllRules(new Date());
+    logSpy.mockRestore();
+
+    expect(res.proposalsCreated).toBe(0);
+    expect(state.rows).toHaveLength(0);
+    expect(vi.mocked(dispatchNotification)).not.toHaveBeenCalled();
+    // The blocked fire never touched lastFiredAt — the rule can fire the
+    // moment the guardrail lifts.
+    expect(db.ruleRows[0].lastFiredAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runTick: single-flight coalescing and per-card error isolation.
+// ---------------------------------------------------------------------------
+
+describe("runTick", () => {
+  it("a thrown provider error on one card still processes the others", async () => {
+    stageCard("cA");
+    stageCard("cB");
+    providers.fetchQuotes = async (card) => {
+      if (card.id === "cA") throw new Error("provider down");
+      return [
+        {
+          marketplace: "tcgplayer",
+          condition: "NM",
+          priceType: "market",
+          price: 10,
+          currency: "USD",
+          listingCount: 1,
+          capturedAt: new Date(),
+        },
+      ];
+    };
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await runTick();
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("card cA"), expect.any(Error));
+    errSpy.mockRestore();
+
+    // Card B ingested despite card A throwing, and every downstream sweep
+    // (rules, watch targets, expiry, hindsight) still ran to completion.
+    expect(res).toEqual({
+      cards: 2,
+      quotesInserted: 1,
+      proposalsCreated: 0,
+      rulesEvaluated: 0,
+      expired: 0,
+      hindsights: 0,
+    });
+  });
+
+  it("two concurrent runTick calls coalesce onto one tick and resolve to the same result", async () => {
+    stageCard("c1");
+
+    const [a, b] = await Promise.all([runTick(), runTick()]);
+    expect(a).toBe(b); // the very same TickResult object, not two equal ticks
+    expect(db.cardLoads).toBe(1);
+
+    // Once the tick settles the guard resets: the next call runs a fresh tick.
+    const c = await runTick();
+    expect(c).not.toBe(a);
+    expect(db.cardLoads).toBe(2);
+  });
+
+  it("a rejected tick resets the single-flight guard instead of wedging it", async () => {
+    db.failNextCardLoad = true;
+    await expect(runTick()).rejects.toThrow("card load failed");
+
+    const res = await runTick();
+    expect(res.cards).toBe(0);
   });
 });
