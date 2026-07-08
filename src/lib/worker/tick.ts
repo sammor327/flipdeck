@@ -25,6 +25,7 @@ import { dispatchNotification } from "../notifications/dispatch";
 import { providerFor, type ProviderQuote } from "../providers";
 import { computeMarketStat, type StatPoint } from "../stats";
 import { evaluateWatchTarget } from "../watchTargets";
+import { fastLaneCardIds, resolveRuleCardIds } from "../fastLane";
 import { dirtyCards } from "../queue";
 import { formatMoney, formatSignedMoney, formatDelta } from "../format";
 
@@ -126,25 +127,6 @@ async function primarySeries(cardId: string, now: Date): Promise<PricePointLite[
   return rows.map((r) => ({ price: r.price, capturedAt: r.capturedAt, listingCount: r.listingCount }));
 }
 
-async function resolveRuleCardIds(rule: {
-  scope: string;
-  cardId: string | null;
-  userId: string;
-}): Promise<string[]> {
-  if (rule.scope === "card") return rule.cardId ? [rule.cardId] : [];
-  if (rule.scope === "watchlist") {
-    const items = await prisma.watchlistItem.findMany({ where: { userId: rule.userId }, select: { cardId: true } });
-    return items.map((i) => i.cardId);
-  }
-  // inventory
-  const items = await prisma.inventoryItem.findMany({
-    where: { portfolio: { userId: rule.userId }, status: { in: ["owned", "listed"] } },
-    select: { cardId: true },
-    distinct: ["cardId"],
-  });
-  return items.map((i) => i.cardId);
-}
-
 export interface TickResult {
   cards: number;
   quotesInserted: number;
@@ -160,10 +142,7 @@ export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<Ti
   // 1–2. Ingest + recompute stats.
   let cardWhere: object = {};
   if (opts.fastLaneOnly) {
-    const rules = await prisma.alertRule.findMany({ where: { enabled: true }, select: { scope: true, cardId: true, userId: true } });
-    const ids = new Set<string>();
-    for (const r of rules) (await resolveRuleCardIds(r)).forEach((id) => ids.add(id));
-    cardWhere = { id: { in: [...ids] } };
+    cardWhere = { id: { in: [...(await fastLaneCardIds())] } };
   }
   const cards = await loadCards(cardWhere);
   let quotesInserted = 0;
