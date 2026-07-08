@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { CONDITION_MULTIPLIER, type Condition } from "@/lib/constants";
+import { conditionMultiplier } from "@/lib/constants";
 import { round2 } from "@/lib/math";
 
 function csvCell(v: string | number | null | undefined): string {
@@ -23,7 +23,7 @@ export async function GET() {
   const header = ["name", "set", "game", "condition", "quantity", "cost_basis", "market_price", "status", "tags", "location"];
   const rows = items.map((it) => {
     const nm = it.card.marketStat?.currentPrice ?? null;
-    const price = nm != null ? round2(nm * CONDITION_MULTIPLIER[it.condition as Condition]) : "";
+    const price = nm != null ? round2(nm * conditionMultiplier(it.condition)) : "";
     return [
       it.card.name,
       it.card.setCode,

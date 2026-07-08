@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import type { Condition, FeeProfile, Marketplace } from "@/lib/constants";
-import { DEFAULT_FEE_PROFILES } from "@/lib/constants";
+import { DEFAULT_FEE_PROFILES, normalizeCondition } from "@/lib/constants";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { fromJson } from "@/lib/json";
@@ -48,7 +48,7 @@ export async function addInventoryItem(input: AddItemInput) {
       portfolioId: pid,
       cardId: input.cardId,
       quantity: Math.max(1, Math.floor(input.quantity || 1)),
-      condition: input.condition || "NM",
+      condition: normalizeCondition(input.condition) ?? "NM",
       costBasis: Math.max(0, input.costBasis || 0),
       tags: input.tags ?? "",
       location: input.location || null,
@@ -66,11 +66,13 @@ export async function updateInventoryItem(
 ) {
   const ctx = await ownItem(id);
   if (!ctx) return { ok: false, error: "Not found" };
+  const condition = input.condition != null ? normalizeCondition(input.condition) : undefined;
+  if (condition === null) return { ok: false, error: "Invalid condition" };
   await prisma.inventoryItem.update({
     where: { id },
     data: {
       quantity: input.quantity != null ? Math.max(1, Math.floor(input.quantity)) : undefined,
-      condition: input.condition,
+      condition,
       costBasis: input.costBasis != null ? Math.max(0, input.costBasis) : undefined,
       tags: input.tags,
       location: input.location,
@@ -241,12 +243,18 @@ export async function importInventoryCsv(text: string) {
     const match =
       (setWanted && candidates.find((c) => c.setCode.toLowerCase() === setWanted || c.setName.toLowerCase() === setWanted)) ||
       candidates[0];
+    const rawCondition = iCond >= 0 ? cells[iCond] : "";
+    const condition = rawCondition ? normalizeCondition(rawCondition) : "NM";
+    if (condition == null) {
+      skipped.push(`${name} (unknown condition "${rawCondition}")`);
+      continue;
+    }
     await prisma.inventoryItem.create({
       data: {
         portfolioId: pid,
         cardId: match.id,
         quantity: iQty >= 0 ? Math.max(1, parseInt(cells[iQty] || "1", 10) || 1) : 1,
-        condition: (iCond >= 0 && (cells[iCond] as Condition)) || "NM",
+        condition,
         costBasis: iCost >= 0 ? Math.max(0, parseFloat(cells[iCost] || "0") || 0) : 0,
         tags: iTags >= 0 ? cells[iTags] || "" : "",
         status: "owned",
