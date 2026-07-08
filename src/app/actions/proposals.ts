@@ -2,14 +2,17 @@
 
 import { revalidatePath } from "next/cache";
 import type { InventoryItem, Prisma, TradeProposal } from "@prisma/client";
-import type { Side } from "@/lib/constants";
+import type { Marketplace, Side } from "@/lib/constants";
 import { UNDO_WINDOW_MS } from "@/lib/constants";
 import type { BuyEffect, InventoryEffect, SellEffect } from "@/lib/actLoop";
 import { planSellConsumption } from "@/lib/actLoop";
 import { computeHindsight } from "@/lib/alerts/expiry";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { buyEdge, netProceeds } from "@/lib/fees";
+import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { fromJson, toJson } from "@/lib/json";
+import { round2 } from "@/lib/math";
 
 export interface ProposalActionResult {
   ok: boolean;
@@ -220,6 +223,59 @@ export async function declineProposal(id: string): Promise<ProposalActionResult>
   revalidatePath("/alerts");
   revalidatePath("/");
   return { ok: true, undoUntil: undoUntil.getTime() };
+}
+
+/** Edit a pending proposal's price → recompute the after-fee net exactly the
+ * way the worker did when it created the proposal (see createProposal in
+ * lib/worker/tick.ts). The priceSnapshot is deliberately left untouched: it
+ * stays the evidence of what the rule saw, while proposedPrice/netAfterFees
+ * describe what the user will actually execute (hindsight math reads
+ * proposedPrice, so it follows the edit naturally). */
+export async function editProposalPrice(id: string, newPrice: number): Promise<ProposalActionResult> {
+  const ctx = await owned(id);
+  if (!ctx) return { ok: false, error: "Not found" };
+  if (ctx.p.status !== "pending") return { ok: false, error: `Already ${ctx.p.status}` };
+  if (!Number.isFinite(newPrice) || newPrice <= 0) return { ok: false, error: "Price must be greater than $0" };
+  const price = round2(newPrice);
+  if (price <= 0) return { ok: false, error: "Price must be greater than $0" };
+
+  const now = new Date();
+  // Same expiry rule as approve/decline: past-expiry rows belong to the worker sweep.
+  if (ctx.p.expiresAt.getTime() <= now.getTime()) return { ok: false, error: "Already expired" };
+
+  const settings = await prisma.userSettings.findUnique({ where: { userId: ctx.user.id } });
+  const profiles = mergeFeeProfiles(settings?.feeProfiles);
+  const marketplace = ctx.p.marketplace as Marketplace;
+  const fee = profiles[marketplace];
+  if (!fee) return { ok: false, error: "Unknown marketplace" };
+
+  // BUY edge needs an expected resale price: live stat → the median the rule
+  // saw at proposal time → the new price itself.
+  const stat = await prisma.marketStat.findUnique({ where: { cardId: ctx.p.cardId } });
+  const snapshot = fromJson<Record<string, unknown>>(ctx.p.priceSnapshot, {});
+  const snapMedian = typeof snapshot.median90d === "number" && Number.isFinite(snapshot.median90d) ? snapshot.median90d : null;
+  const median90d = stat?.median90d ?? snapMedian ?? price;
+
+  const netAfterFees =
+    (ctx.p.side as Side) === "sell"
+      ? netProceeds(price, ctx.p.quantity, fee).net
+      : buyEdge(price, ctx.p.quantity, median90d, marketplace, profiles).net;
+
+  // Same conditional-claim pattern as approve/decline: only a still-pending,
+  // unexpired row takes the edit — approved/declined/expired rows are never
+  // modified, and decidedAt/undoUntil/status stay untouched.
+  const claim = await prisma.tradeProposal.updateMany({
+    where: { id, userId: ctx.user.id, status: "pending", expiresAt: { gt: now } },
+    data: { proposedPrice: price, netAfterFees },
+  });
+  if (claim.count !== 1) {
+    const fresh = await prisma.tradeProposal.findFirst({ where: { id, userId: ctx.user.id } });
+    if (fresh?.status === "pending") return { ok: false, error: "Already expired" };
+    return { ok: false, error: `Already ${fresh?.status ?? ctx.p.status}` };
+  }
+  revalidatePath("/alerts");
+  revalidatePath("/");
+  return { ok: true };
 }
 
 /** Undo a just-made decision within the 5s window → back to pending (or expired

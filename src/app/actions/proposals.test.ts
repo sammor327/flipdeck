@@ -16,6 +16,7 @@ const { db, prismaFake, resetDb } = vi.hoisted(() => {
     watchlistItems: [] as Row[],
     marketStats: [] as Row[],
     notificationLogs: [] as Row[],
+    userSettings: [] as Row[],
   };
   let seq = 0;
   const nextId = (p: string) => `${p}${++seq}`;
@@ -103,6 +104,9 @@ const { db, prismaFake, resetDb } = vi.hoisted(() => {
     marketStat: {
       findUnique: async ({ where }: any) => db.marketStats.find((r) => r.cardId === where.cardId) ?? null,
     },
+    userSettings: {
+      findUnique: async ({ where }: any) => db.userSettings.find((r) => r.userId === where.userId) ?? null,
+    },
     // Interactive transaction: hand the callback the same store. Atomicity is
     // provided by the conditional claim inside, which is what these tests pin.
     $transaction: async (fn: (tx: any) => Promise<any>) => fn(prismaFake),
@@ -119,7 +123,9 @@ vi.mock("@/lib/db", () => ({ prisma: prismaFake }));
 vi.mock("@/lib/auth", () => ({ getCurrentUser: async () => ({ id: "u1", email: "t@t.t", name: "T" }) }));
 vi.mock("next/cache", () => ({ revalidatePath: () => {} }));
 
-import { approveProposal, declineProposal, undoDecision } from "./proposals";
+import { approveProposal, declineProposal, editProposalPrice, undoDecision } from "./proposals";
+import { DEFAULT_FEE_PROFILES } from "@/lib/constants";
+import { buyEdge, netProceeds } from "@/lib/fees";
 
 function seedProposal(overrides: Row = {}): Row {
   const now = Date.now();
@@ -130,6 +136,7 @@ function seedProposal(overrides: Row = {}): Row {
     side: "buy",
     quantity: 1,
     proposedPrice: 10,
+    marketplace: "tcgplayer",
     netAfterFees: 8.5,
     costBasis: null,
     status: "pending",
@@ -307,5 +314,65 @@ describe("undoDecision claim", () => {
     expect(results.find((r) => !r.ok)?.error).toBe("Undo window elapsed");
     expect(db.tradeProposals[0].status).toBe("pending");
     expect(db.inventoryItems).toHaveLength(0);
+  });
+});
+
+describe("editProposalPrice", () => {
+  it("recomputes a pending SELL's netAfterFees with default tcgplayer fees", async () => {
+    seedProposal({ side: "sell", quantity: 2, proposedPrice: 10, netAfterFees: 17 });
+    const res = await editProposalPrice("tp-1", 12.5);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(12.5);
+    expect(db.tradeProposals[0].netAfterFees).toBe(netProceeds(12.5, 2, DEFAULT_FEE_PROFILES.tcgplayer).net);
+    // Only price + net change — the row stays a live pending proposal.
+    expect(db.tradeProposals[0].status).toBe("pending");
+    expect(db.tradeProposals[0].decidedAt).toBeNull();
+    expect(db.tradeProposals[0].undoUntil).toBeNull();
+    expect(JSON.parse(db.tradeProposals[0].priceSnapshot)).toEqual({ price: 10 }); // evidence untouched
+  });
+
+  it("recomputes a pending BUY's edge against the marketStat median and honors fee overrides", async () => {
+    seedProposal({ side: "buy", quantity: 2, proposedPrice: 10, netAfterFees: 8.5 });
+    db.marketStats.push({ cardId: "c1", currentPrice: 11, median90d: 14 });
+    const override = { feePct: 20, paymentFeePct: 0, shippingFlat: 1 };
+    db.userSettings.push({ id: "us-1", userId: "u1", feeProfiles: JSON.stringify({ tcgplayer: override }) });
+
+    const res = await editProposalPrice("tp-1", 9.25);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(9.25);
+    expect(db.tradeProposals[0].netAfterFees).toBe(
+      buyEdge(9.25, 2, 14, "tcgplayer", { ...DEFAULT_FEE_PROFILES, tcgplayer: override }).net
+    );
+  });
+
+  it("returns 'Already approved' and changes nothing on an approved proposal", async () => {
+    seedProposal();
+    await approveProposal("tp-1");
+    const before = { ...db.tradeProposals[0] };
+    const res = await editProposalPrice("tp-1", 25);
+    expect(res).toEqual({ ok: false, error: "Already approved" });
+    expect(db.tradeProposals[0].proposedPrice).toBe(before.proposedPrice);
+    expect(db.tradeProposals[0].netAfterFees).toBe(before.netAfterFees);
+    expect(db.tradeProposals[0].status).toBe("approved");
+  });
+
+  it("returns 'Already expired' past expiresAt without touching the row", async () => {
+    seedProposal({ expiresAt: new Date(Date.now() - 60_000) });
+    const res = await editProposalPrice("tp-1", 25);
+    expect(res).toEqual({ ok: false, error: "Already expired" });
+    expect(db.tradeProposals[0].proposedPrice).toBe(10);
+    expect(db.tradeProposals[0].netAfterFees).toBe(8.5);
+    // The row is untouched — the worker sweep owns the pending→expired flip.
+    expect(db.tradeProposals[0].status).toBe("pending");
+  });
+
+  it("rejects NaN, zero, negative, and infinite prices server-side", async () => {
+    seedProposal();
+    for (const bad of [NaN, 0, -5, Infinity]) {
+      const res = await editProposalPrice("tp-1", bad);
+      expect(res).toEqual({ ok: false, error: "Price must be greater than $0" });
+    }
+    expect(db.tradeProposals[0].proposedPrice).toBe(10);
+    expect(db.tradeProposals[0].netAfterFees).toBe(8.5);
   });
 });
