@@ -41,9 +41,10 @@ export async function destroySession(): Promise<void> {
 }
 
 /**
- * The signed-in user for this request. Falls back to the demo user in dev so a
- * fresh clone shows a working product; set DISABLE_DEMO_AUTOLOGIN=1 to require a
- * real sign-in. Cached per request.
+ * The signed-in user for this request. In dev only, falls back to the seeded
+ * demo user so a fresh clone shows a working product; set
+ * DISABLE_DEMO_AUTOLOGIN=1 to require a real sign-in even in dev. In production
+ * there is no fallback: no valid session means null. Cached per request.
  */
 export const getCurrentUser = cache(async () => {
   const token = cookies().get(COOKIE)?.value;
@@ -51,10 +52,10 @@ export const getCurrentUser = cache(async () => {
     const session = await prisma.session.findUnique({ where: { token }, include: { user: true } });
     if (session && session.expiresAt > new Date()) return session.user;
   }
-  if (process.env.DISABLE_DEMO_AUTOLOGIN !== "1") {
+  if (process.env.NODE_ENV !== "production" && process.env.DISABLE_DEMO_AUTOLOGIN !== "1") {
     const email = process.env.DEMO_EMAIL || "demo@flipdeck.local";
     const demo = await prisma.user.findUnique({ where: { email } });
-    return demo ?? (await prisma.user.findFirst());
+    return demo ?? null;
   }
   return null;
 });
