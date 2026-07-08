@@ -3,7 +3,7 @@
 // works keyless. Generate keys with: npx web-push generate-vapid-keys
 
 import webpush from "web-push";
-import type { PushChannel, PushPayload, PushSub } from "./types";
+import type { DeliverResult, PushChannel, PushPayload, PushSub } from "./types";
 
 let ready = false;
 function ensureConfigured(): boolean {
@@ -22,17 +22,20 @@ export const webPushChannel: PushChannel = {
   isConfigured() {
     return Boolean(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY);
   },
-  async deliver(sub: PushSub, payload: PushPayload): Promise<boolean> {
-    if (!ensureConfigured()) return false;
+  async deliver(sub: PushSub, payload: PushPayload): Promise<DeliverResult> {
+    if (!ensureConfigured()) return "failed";
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
         JSON.stringify(payload)
       );
-      return true;
-    } catch {
-      // Subscription may be expired/invalid; caller keeps going.
-      return false;
+      return "ok";
+    } catch (err) {
+      // web-push's WebPushError carries the push service's HTTP status. 404/410
+      // mean the subscription is permanently gone — tell the caller to prune
+      // it. Anything else (network error, 5xx) is transient; caller keeps going.
+      const status = (err as { statusCode?: number }).statusCode;
+      return status === 404 || status === 410 ? "gone" : "failed";
     }
   },
 };

@@ -31,6 +31,13 @@ export interface PushPayload {
 }
 
 /**
+ * Outcome of a single delivery attempt. "gone" means the push service said the
+ * subscription no longer exists (HTTP 404/410) — the caller should prune it;
+ * "failed" is transient (network error, 5xx) and worth re-attempting later.
+ */
+export type DeliverResult = "ok" | "failed" | "gone";
+
+/**
  * A delivery channel. Web Push (browser) ships in v1; the interface is
  * transport-agnostic so native push (FCM/APNs) is a new implementation, not a
  * rewrite — exactly the extension point the brief asks for.
@@ -38,5 +45,5 @@ export interface PushPayload {
 export interface PushChannel {
   readonly id: NotificationChannel;
   isConfigured(): boolean;
-  deliver(sub: PushSub, payload: PushPayload): Promise<boolean>;
+  deliver(sub: PushSub, payload: PushPayload): Promise<DeliverResult>;
 }
