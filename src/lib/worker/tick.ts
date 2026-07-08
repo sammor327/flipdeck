@@ -3,7 +3,8 @@
 //   2. recomputes the cached MarketStat
 //   3. evaluates enabled alert rules against the dirty cards
 //   4. fires TradeProposals + notifications for rules that trip (respecting cooldown)
-//   5. expires stale pending proposals and records hindsight
+//   5. evaluates watchlist target prices (buy/sell targets fire the same way)
+//   6. expires stale pending proposals and records hindsight
 //
 // Everything the tick decides is delegated to the pure modules (stats, evaluate,
 // fees, expiry) so this file is orchestration + I/O only.
@@ -22,6 +23,7 @@ import { resolveExecution } from "../execution";
 import { dispatchNotification } from "../notifications/dispatch";
 import { providerFor, type ProviderQuote } from "../providers";
 import { computeMarketStat, type StatPoint } from "../stats";
+import { evaluateWatchTarget } from "../watchTargets";
 import { dirtyCards } from "../queue";
 import { formatMoney, formatSignedMoney, formatDelta } from "../format";
 
@@ -172,13 +174,16 @@ export async function runTick(opts: { fastLaneOnly?: boolean } = {}): Promise<Ti
   // 3–4. Evaluate rules, fire proposals.
   const evaluated = await evaluateAllRules(now);
 
-  // 5. Expire stale proposals.
+  // 5. Evaluate watchlist target prices.
+  const watchProposals = await evaluateWatchTargets(now);
+
+  // 6. Expire stale proposals.
   const expired = await expireStaleProposals(now);
 
   return {
     cards: cards.length,
     quotesInserted,
-    proposalsCreated: evaluated.proposalsCreated,
+    proposalsCreated: evaluated.proposalsCreated + watchProposals,
     rulesEvaluated: evaluated.rulesEvaluated,
     expired,
   };
@@ -236,6 +241,153 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
   return { rulesEvaluated: rules.length, proposalsCreated };
 }
 
+// Watch targets have no AlertRule row to carry a cooldown, so they mirror the
+// rule defaults: skip while a target-fired proposal for the same (user, card,
+// side) is pending or was created within the last 360 minutes.
+const WATCH_TARGET_COOLDOWN_MINUTES = 360;
+const WATCH_TARGET_EXPIRY_MINUTES = 30;
+
+/**
+ * Evaluate every watchlist item with a target price against its cached
+ * MarketStat and fire ruleId-null TradeProposals (plus notifications) for hits.
+ * Guardrails (kill switch, daily spend cap) apply exactly as for rule fires.
+ * Returns the number of proposals created.
+ */
+export async function evaluateWatchTargets(now = new Date()): Promise<number> {
+  const items = await prisma.watchlistItem.findMany({
+    where: { OR: [{ targetBuyPrice: { not: null } }, { targetSellPrice: { not: null } }] },
+    include: { card: { include: { game: true, marketStat: true } } },
+  });
+  let proposalsCreated = 0;
+
+  for (const item of items) {
+    try {
+      const stat = item.card.marketStat;
+      if (!stat) continue;
+
+      // Holdings gate the sell side (zero holdings → skip, no notification)
+      // and cap the sell quantity below.
+      const holdings = await prisma.inventoryItem.findMany({
+        where: { portfolio: { userId: item.userId }, cardId: item.cardId, status: { in: ["owned", "listed"] } },
+      });
+      const owned = holdings.reduce((s, h) => s + h.quantity, 0);
+
+      const hit = evaluateWatchTarget(item, stat.currentPrice, owned > 0);
+      if (!hit) continue;
+      const side = hit.side;
+
+      // Dedup/cooldown without a schema change: one live or recent target-fired
+      // proposal per (user, card, side).
+      const cooldownStart = new Date(now.getTime() - WATCH_TARGET_COOLDOWN_MINUTES * 60000);
+      const existing = await prisma.tradeProposal.findFirst({
+        where: {
+          userId: item.userId,
+          cardId: item.cardId,
+          side,
+          ruleId: null,
+          OR: [{ status: "pending" }, { createdAt: { gte: cooldownStart } }],
+        },
+      });
+      if (existing) continue;
+
+      // Safety guardrails (kill switch + daily spend cap), same as rule fires.
+      const settings = await prisma.userSettings.findUnique({ where: { userId: item.userId } });
+      const price = round2(stat.currentPrice);
+
+      let quantity = 1;
+      let costBasis: number | null = null;
+      if (side === "sell") {
+        quantity = Math.min(quantity, owned);
+        const totalCost = holdings.reduce((s, h) => s + h.costBasis * h.quantity, 0);
+        costBasis = owned > 0 ? round2(totalCost / owned) : null;
+      }
+
+      const buysCommittedToday = side === "buy" ? await buysCommittedTodayFor(item.userId, now) : 0;
+      const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);
+      if (guard.blocked) {
+        // eslint-disable-next-line no-console
+        console.log(`[worker] guardrail skipped ${side} proposal (watch target, ${item.card.name}): ${guard.reason}`);
+        continue;
+      }
+
+      const marketplace: Marketplace = "tcgplayer";
+      const profiles = mergeFeeProfiles(settings?.feeProfiles);
+      const fee = profiles[marketplace];
+      const netAfterFees =
+        side === "sell"
+          ? netProceeds(price, quantity, fee).net
+          : buyEdge(price, quantity, stat.median90d ?? price, marketplace, profiles).net;
+
+      const exec = resolveExecution({
+        marketplace,
+        side,
+        card: { name: item.card.name, setName: item.card.setName, setCode: item.card.setCode, gameSlug: item.card.game.slug as GameSlug },
+      });
+
+      const proposal = await prisma.tradeProposal.create({
+        data: {
+          userId: item.userId,
+          cardId: item.cardId,
+          ruleId: null,
+          side,
+          quantity,
+          proposedPrice: price,
+          marketplace,
+          deepLink: exec.url,
+          executionMode: exec.mode,
+          rationale: hit.reason,
+          priceSnapshot: toJson({
+            price,
+            delta24hPct: stat.delta24hPct,
+            delta7dPct: stat.delta7dPct,
+            bestSpreadPct: stat.bestSpreadPct,
+            low90d: stat.low90d,
+            median90d: stat.median90d,
+            targetBuyPrice: item.targetBuyPrice,
+            targetSellPrice: item.targetSellPrice,
+          }),
+          netAfterFees,
+          costBasis,
+          status: "pending",
+          expiresAt: new Date(now.getTime() + WATCH_TARGET_EXPIRY_MINUTES * 60000),
+        },
+      });
+      proposalsCreated++;
+
+      const delta = stat.delta24hPct ?? 0;
+      const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${item.card.name} ${formatDelta(delta, "percent")}`;
+      const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${WATCH_TARGET_EXPIRY_MINUTES} min`;
+      await dispatchNotification({
+        userId: item.userId,
+        title,
+        body,
+        deepLink: `${process.env.APP_URL || "http://localhost:3000"}/alerts?proposal=${proposal.id}`,
+        kind: "proposal",
+        proposalId: proposal.id,
+        allowInQuietHours: false,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[worker] watch target ${item.id} failed:`, err);
+    }
+  }
+  return proposalsCreated;
+}
+
+/**
+ * Spend already committed today: pending + approved buys created since
+ * server-local midnight (the cap is a per-calendar-day limit in the server's
+ * timezone). Shared by rule-fired and watch-target-fired proposals.
+ */
+async function buysCommittedTodayFor(userId: string, now: Date): Promise<number> {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todaysBuys = await prisma.tradeProposal.findMany({
+    where: { userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday } },
+    select: { proposedPrice: true, quantity: true },
+  });
+  return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
+}
+
 async function createProposal(
   rule: { id: string; userId: string; name: string; quantity: number; marketplace: string | null; action: string; proposalExpiryMinutes: number; quietHoursRespected: boolean },
   cardId: string,
@@ -268,17 +420,7 @@ async function createProposal(
     costBasis = owned > 0 ? round2(totalCost / owned) : null;
   }
 
-  // Spend already committed today: pending + approved buys created since server-local
-  // midnight (the cap is a per-calendar-day limit in the server's timezone).
-  let buysCommittedToday = 0;
-  if (side === "buy") {
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const todaysBuys = await prisma.tradeProposal.findMany({
-      where: { userId: rule.userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday } },
-      select: { proposedPrice: true, quantity: true },
-    });
-    buysCommittedToday = todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
-  }
+  const buysCommittedToday = side === "buy" ? await buysCommittedTodayFor(rule.userId, now) : 0;
 
   // Blocked fires create nothing and do NOT start the rule's cooldown (no lastFiredAt update).
   const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);

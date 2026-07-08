@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useMemo, useRef, useState, useTransition, type KeyboardEvent } from "react";
+import { updateWatchTargets } from "@/app/actions/watchlist";
 import { GAMES, marketplaceById } from "@/lib/constants";
 import { formatMoney } from "@/lib/format";
 import type { CardRow, ColKey } from "@/lib/cardRow";
@@ -53,6 +55,7 @@ export function CardTable({
   emptyText = "Nothing here yet.",
   gameFilter = true,
   actionLabel,
+  editableTargets = false,
 }: {
   rows: CardRow[];
   columns: ColKey[];
@@ -61,6 +64,8 @@ export function CardTable({
   emptyText?: string;
   gameFilter?: boolean;
   actionLabel?: string;
+  /** Watchlist only: target buy/sell cells become click-to-edit inputs. */
+  editableTargets?: boolean;
 }) {
   const [game, setGame] = useState("all");
   const [sort, setSort] = useState<{ key: ColKey; dir: 1 | -1 }>({ key: initialSort, dir: initialDir });
@@ -144,7 +149,7 @@ export function CardTable({
                 {view.map((r) => (
                   <tr key={r.cardId}>
                     {columns.map((c) => (
-                      <Cell key={c} col={c} row={r} actionLabel={actionLabel} />
+                      <Cell key={c} col={c} row={r} actionLabel={actionLabel} editableTargets={editableTargets} />
                     ))}
                   </tr>
                 ))}
@@ -157,7 +162,7 @@ export function CardTable({
   );
 }
 
-function Cell({ col, row, actionLabel }: { col: ColKey; row: CardRow; actionLabel?: string }) {
+function Cell({ col, row, actionLabel, editableTargets }: { col: ColKey; row: CardRow; actionLabel?: string; editableTargets?: boolean }) {
   switch (col) {
     case "card":
       return (
@@ -216,8 +221,22 @@ function Cell({ col, row, actionLabel }: { col: ColKey; row: CardRow; actionLabe
         </td>
       );
     case "targetBuy":
+      if (editableTargets) {
+        return (
+          <td className="num">
+            <TargetCell row={row} field="targetBuyPrice" label={`Target buy price for ${row.name}`} />
+          </td>
+        );
+      }
       return <td className="num">{row.targetBuyPrice != null ? formatMoney(row.targetBuyPrice) : "—"}</td>;
     case "targetSell":
+      if (editableTargets) {
+        return (
+          <td className="num">
+            <TargetCell row={row} field="targetSellPrice" label={`Target sell price for ${row.name}`} />
+          </td>
+        );
+      }
       return <td className="num">{row.targetSellPrice != null ? formatMoney(row.targetSellPrice) : "—"}</td>;
     case "notes":
       return (
@@ -242,4 +261,63 @@ function Cell({ col, row, actionLabel }: { col: ColKey; row: CardRow; actionLabe
     default:
       return <td />;
   }
+}
+
+/**
+ * Click-to-edit target price (watchlist). Enter/blur saves via the server
+ * action, Escape cancels, and an empty input clears the target.
+ */
+function TargetCell({ row, field, label }: { row: CardRow; field: "targetBuyPrice" | "targetSellPrice"; label: string }) {
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [pending, startTransition] = useTransition();
+  const cancelRef = useRef(false);
+  const value = field === "targetBuyPrice" ? row.targetBuyPrice : row.targetSellPrice;
+
+  const save = (raw: string) => {
+    setEditing(false);
+    const trimmed = raw.trim();
+    const next = trimmed === "" ? null : parseFloat(trimmed);
+    if (next != null && !Number.isFinite(next)) return;
+    if (next === (value ?? null)) return; // unchanged
+    const patch = field === "targetBuyPrice" ? { targetBuyPrice: next } : { targetSellPrice: next };
+    startTransition(async () => {
+      await updateWatchTargets(row.cardId, patch);
+      router.refresh();
+    });
+  };
+
+  if (!editing) {
+    return (
+      <button className="btn sm ghost" onClick={() => setEditing(true)} disabled={pending} aria-label={label}>
+        {value != null ? formatMoney(value) : "Set"}
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      type="number"
+      min={0}
+      step="0.01"
+      defaultValue={value ?? ""}
+      aria-label={label}
+      style={{ width: 96 }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.currentTarget.blur(); // save via onBlur
+        } else if (e.key === "Escape") {
+          cancelRef.current = true;
+          setEditing(false);
+        }
+      }}
+      onBlur={(e) => {
+        if (cancelRef.current) {
+          cancelRef.current = false;
+          return;
+        }
+        save(e.currentTarget.value);
+      }}
+    />
+  );
 }

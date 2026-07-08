@@ -12,14 +12,15 @@ export default async function WatchlistPage() {
     <>
       <h1>Watchlist</h1>
       <div className="sub" style={{ marginBottom: 18 }}>
-        Cards you don&apos;t own yet, with target buy/sell prices. Filter by game and sort any column. Dip-buyer rules watch these.
+        Cards you&apos;re tracking, with target buy/sell prices. Click a target cell to set or change it — FlipDeck
+        proposes a buy when the price hits your target (and a sell once you own copies).
       </div>
 
       {rows.length === 0 ? (
         <EmptyState
           icon="☆"
           title="Your watchlist is empty"
-          hint="Add target prices from any card page — a Dip-buyer rule will propose a buy when one hits your target."
+          hint="Watch cards from any card page, then set target prices here — FlipDeck proposes a buy when the price hits your target."
           action={
             <Link className="btn pri" href="/movers">
               Browse top movers
@@ -33,6 +34,7 @@ export default async function WatchlistPage() {
           initialSort="delta24h"
           initialDir={-1}
           emptyText="No watchlist cards match this game."
+          editableTargets
         />
       )}
     </>
