@@ -3,7 +3,7 @@
 // from the NM market price via CONDITION_MULTIPLIER.
 
 import type { Condition, ItemStatus } from "./constants";
-import { CONDITION_MULTIPLIER } from "./constants";
+import { conditionMultiplier } from "./constants";
 import { pctChange, round2 } from "./math";
 
 export interface HoldingInput {
@@ -27,7 +27,9 @@ export interface ValuedHolding {
 
 export function priceForCondition(nm: number | null, condition: Condition): number | null {
   if (nm == null) return null;
-  return round2(nm * CONDITION_MULTIPLIER[condition]);
+  // conditionMultiplier (not direct indexing) so legacy rows with an
+  // unrecognized condition string price as NM instead of NaN-poisoning totals.
+  return round2(nm * conditionMultiplier(condition));
 }
 
 export function valueHolding(h: HoldingInput): ValuedHolding {

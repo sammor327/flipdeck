@@ -46,6 +46,32 @@ export const CONDITION_MULTIPLIER: Record<Condition, number> = {
   DM: 0.4,
 };
 
+// Accepts codes ("NM"), display labels ("Near Mint"), and common aliases, all
+// case-insensitively. Built once at module load.
+const CONDITION_LOOKUP: Record<string, Condition> = (() => {
+  const map: Record<string, Condition> = { mint: "NM", m: "NM", dmg: "DM" };
+  for (const { code, label } of CONDITIONS) {
+    map[code.toLowerCase()] = code;
+    map[label.toLowerCase()] = code;
+  }
+  return map;
+})();
+
+/** Normalize free-form condition input (CSV cells, form values) to a Condition
+ * code, or null when unrecognized. Validation happens here at the write
+ * boundary so the DB only ever holds canonical codes. */
+export function normalizeCondition(input: string | null | undefined): Condition | null {
+  if (input == null) return null;
+  return CONDITION_LOOKUP[input.trim().toLowerCase()] ?? null;
+}
+
+/** Multiplier for a condition string of unknown provenance (e.g. a legacy DB
+ * row). Unrecognized values fall back to the NM multiplier — never undefined,
+ * so downstream math can't NaN. */
+export function conditionMultiplier(condition: string): number {
+  return CONDITION_MULTIPLIER[condition as Condition] ?? 1;
+}
+
 // ── Marketplaces ─────────────────────────────────────────────────────────────
 export type Marketplace = "tcgplayer" | "cardmarket" | "ebay";
 

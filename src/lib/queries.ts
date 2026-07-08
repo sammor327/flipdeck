@@ -3,7 +3,7 @@
 // are plain async functions called from server components.
 
 import type { CardRow } from "./cardRow";
-import { CONDITION_MULTIPLIER, type Condition } from "./constants";
+import { conditionMultiplier, type Condition } from "./constants";
 import { prisma } from "./db";
 import { round2 } from "./math";
 import { summarize, valueHolding, type HoldingInput, type PortfolioSummary } from "./portfolio";
@@ -232,7 +232,7 @@ export async function getPortfolioSeries(userId: string): Promise<PortfolioPoint
     let v = 0;
     for (const it of items) {
       const price = carried.get(it.cardId)?.get(k) ?? 0;
-      v += price * it.quantity * CONDITION_MULTIPLIER[it.condition as Condition];
+      v += price * it.quantity * conditionMultiplier(it.condition);
     }
     return { t: new Date(k + "T12:00:00Z").getTime(), v: round2(v) };
   });
