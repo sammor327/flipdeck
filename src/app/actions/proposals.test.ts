@@ -222,6 +222,50 @@ describe("approveProposal claim", () => {
   });
 });
 
+describe("past-expiry guard", () => {
+  it("refuses to approve a pending proposal whose expiresAt has passed, applying no effects", async () => {
+    seedProposal({ expiresAt: new Date(Date.now() - 60_000) });
+    const res = await approveProposal("tp-1");
+    expect(res).toEqual({ ok: false, error: "Already expired" });
+    expect(db.inventoryItems).toHaveLength(0); // no BUY row created
+    // The row is untouched — the worker sweep owns the pending→expired flip.
+    expect(db.tradeProposals[0].status).toBe("pending");
+    expect(db.tradeProposals[0].decidedAt).toBeNull();
+    expect(JSON.parse(db.tradeProposals[0].priceSnapshot)._inventoryEffect).toBeUndefined();
+  });
+
+  it("refuses to approve an expired SELL without consuming holdings", async () => {
+    seedProposal({ side: "sell", quantity: 2, proposedPrice: 10, netAfterFees: 17, expiresAt: new Date(Date.now() - 1) });
+    seedHolding({ quantity: 3 });
+    const res = await approveProposal("tp-1");
+    expect(res).toEqual({ ok: false, error: "Already expired" });
+    expect(db.inventoryItems).toHaveLength(1);
+    expect(db.inventoryItems[0].status).toBe("owned");
+    expect(db.inventoryItems[0].quantity).toBe(3);
+  });
+
+  it("refuses to decline a pending proposal whose expiresAt has passed", async () => {
+    seedProposal({ expiresAt: new Date(Date.now() - 60_000) });
+    const res = await declineProposal("tp-1");
+    expect(res).toEqual({ ok: false, error: "Already expired" });
+    expect(db.tradeProposals[0].status).toBe("pending");
+    expect(db.tradeProposals[0].undoUntil).toBeNull();
+  });
+
+  it("still approves and declines fresh proposals", async () => {
+    seedProposal({ expiresAt: new Date(Date.now() + 60_000) });
+    const approved = await approveProposal("tp-1");
+    expect(approved.ok).toBe(true);
+    expect(db.inventoryItems).toHaveLength(1);
+
+    resetDb();
+    seedProposal({ expiresAt: new Date(Date.now() + 60_000) });
+    const declined = await declineProposal("tp-1");
+    expect(declined.ok).toBe(true);
+    expect(db.tradeProposals[0].status).toBe("declined");
+  });
+});
+
 describe("declineProposal claim", () => {
   it("only the first decline wins; approve-then-decline reports the real status", async () => {
     seedProposal();
