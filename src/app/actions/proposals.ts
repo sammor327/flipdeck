@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { InventoryItem, TradeProposal } from "@prisma/client";
+import type { InventoryItem, Prisma, TradeProposal } from "@prisma/client";
 import type { Side } from "@/lib/constants";
 import { UNDO_WINDOW_MS } from "@/lib/constants";
 import type { BuyEffect, InventoryEffect, SellEffect } from "@/lib/actLoop";
@@ -39,13 +39,15 @@ function prevOf(row: InventoryItem) {
 }
 
 /** Apply the approved proposal's inventory/watchlist side effects and return a
- * record of exactly what changed, so undoDecision can reverse it. */
-async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date): Promise<InventoryEffect> {
+ * record of exactly what changed, so undoDecision can reverse it. Runs on the
+ * caller's transaction client so the claim + effects commit (or roll back)
+ * together. */
+async function applyInventoryEffect(db: Prisma.TransactionClient, userId: string, p: TradeProposal, now: Date): Promise<InventoryEffect> {
   if ((p.side as Side) === "buy") {
     // Find-or-create the user's portfolio (same pattern as actions/inventory.ts).
-    const existing = await prisma.portfolio.findFirst({ where: { userId } });
-    const pid = existing?.id ?? (await prisma.portfolio.create({ data: { userId } })).id;
-    const created = await prisma.inventoryItem.create({
+    const existing = await db.portfolio.findFirst({ where: { userId } });
+    const pid = existing?.id ?? (await db.portfolio.create({ data: { userId } })).id;
+    const created = await db.inventoryItem.create({
       data: {
         portfolioId: pid,
         cardId: p.cardId,
@@ -57,11 +59,11 @@ async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date)
     });
     const effect: BuyEffect = { kind: "buy", createdItemId: created.id };
     // The card graduated from "watching" to "owned" — one-tap move.
-    const watch = await prisma.watchlistItem.findUnique({
+    const watch = await db.watchlistItem.findUnique({
       where: { userId_cardId: { userId, cardId: p.cardId } },
     });
     if (watch) {
-      await prisma.watchlistItem.delete({ where: { id: watch.id } });
+      await db.watchlistItem.delete({ where: { id: watch.id } });
       effect.removedWatch = {
         targetBuyPrice: watch.targetBuyPrice,
         targetSellPrice: watch.targetSellPrice,
@@ -73,7 +75,7 @@ async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date)
 
   // SELL: consume holdings oldest-first per the pure planner. An empty plan
   // (copies sold manually in the meantime) still approves cleanly.
-  const holdings = await prisma.inventoryItem.findMany({
+  const holdings = await db.inventoryItem.findMany({
     where: { portfolio: { userId }, cardId: p.cardId, status: { in: ["owned", "listed"] } },
     orderBy: { acquiredAt: "asc" },
   });
@@ -83,7 +85,7 @@ async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date)
   for (const op of plan.full) {
     const row = byId.get(op.id)!;
     effect.updated.push(prevOf(row));
-    await prisma.inventoryItem.update({
+    await db.inventoryItem.update({
       where: { id: op.id },
       data: {
         status: "sold",
@@ -98,8 +100,8 @@ async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date)
   if (plan.split) {
     const row = byId.get(plan.split.id)!;
     effect.updated.push(prevOf(row));
-    await prisma.inventoryItem.update({ where: { id: row.id }, data: { quantity: plan.split.keepQuantity } });
-    const createdRow = await prisma.inventoryItem.create({
+    await db.inventoryItem.update({ where: { id: row.id }, data: { quantity: plan.split.keepQuantity } });
+    const createdRow = await db.inventoryItem.create({
       data: {
         portfolioId: row.portfolioId,
         cardId: row.cardId,
@@ -120,12 +122,13 @@ async function applyInventoryEffect(userId: string, p: TradeProposal, now: Date)
   return effect;
 }
 
-/** Reverse exactly what applyInventoryEffect recorded (undo window). */
-async function reverseInventoryEffect(effect: InventoryEffect, userId: string, cardId: string) {
+/** Reverse exactly what applyInventoryEffect recorded (undo window). Runs on
+ * the caller's transaction client. */
+async function reverseInventoryEffect(db: Prisma.TransactionClient, effect: InventoryEffect, userId: string, cardId: string) {
   if (effect.kind === "buy") {
-    await prisma.inventoryItem.deleteMany({ where: { id: effect.createdItemId } });
+    await db.inventoryItem.deleteMany({ where: { id: effect.createdItemId } });
     if (effect.removedWatch) {
-      await prisma.watchlistItem.upsert({
+      await db.watchlistItem.upsert({
         where: { userId_cardId: { userId, cardId } },
         create: { userId, cardId, ...effect.removedWatch },
         update: effect.removedWatch,
@@ -134,10 +137,10 @@ async function reverseInventoryEffect(effect: InventoryEffect, userId: string, c
     return;
   }
   if (effect.createdRowId) {
-    await prisma.inventoryItem.deleteMany({ where: { id: effect.createdRowId } });
+    await db.inventoryItem.deleteMany({ where: { id: effect.createdRowId } });
   }
   for (const row of effect.updated) {
-    await prisma.inventoryItem.update({
+    await db.inventoryItem.update({
       where: { id: row.id },
       data: { ...row.prev, soldPrice: null, soldFees: null, soldAt: null },
     });
@@ -154,18 +157,30 @@ export async function approveProposal(id: string): Promise<ProposalActionResult>
 
   const now = new Date();
   const undoUntil = new Date(now.getTime() + UNDO_WINDOW_MS);
-  const effect = await applyInventoryEffect(ctx.user.id, ctx.p, now);
-  const snapshot = fromJson<Record<string, unknown>>(ctx.p.priceSnapshot, {});
-  await prisma.tradeProposal.update({
-    where: { id },
-    data: {
-      status: "approved",
-      decidedAt: now,
-      executedAt: now,
-      undoUntil,
-      priceSnapshot: toJson({ ...snapshot, _inventoryEffect: effect }),
-    },
+  // Claim the pending row atomically BEFORE any side effects — the conditional
+  // updateMany is the gate that stops two racing approvals from both applying
+  // inventory effects. Claim + effects + undo record share one transaction so
+  // a crash mid-way rolls the claim back rather than stranding an approved row
+  // with no effects applied.
+  const claimed = await prisma.$transaction(async (tx) => {
+    const claim = await tx.tradeProposal.updateMany({
+      where: { id, userId: ctx.user.id, status: "pending" },
+      data: { status: "approved", decidedAt: now, executedAt: now, undoUntil },
+    });
+    if (claim.count !== 1) return false;
+    const effect = await applyInventoryEffect(tx, ctx.user.id, ctx.p, now);
+    const snapshot = fromJson<Record<string, unknown>>(ctx.p.priceSnapshot, {});
+    await tx.tradeProposal.update({
+      where: { id },
+      data: { priceSnapshot: toJson({ ...snapshot, _inventoryEffect: effect }) },
+    });
+    return true;
   });
+  if (!claimed) {
+    // Someone else (other tab, retry, expiry sweep) got there first.
+    const fresh = await prisma.tradeProposal.findFirst({ where: { id, userId: ctx.user.id } });
+    return { ok: false, error: `Already ${fresh?.status ?? ctx.p.status}` };
+  }
   await prisma.notificationLog.updateMany({
     where: { proposalId: id },
     data: { actedOn: true, actedAt: now },
@@ -185,10 +200,16 @@ export async function declineProposal(id: string): Promise<ProposalActionResult>
 
   const now = new Date();
   const undoUntil = new Date(now.getTime() + UNDO_WINDOW_MS);
-  await prisma.tradeProposal.update({
-    where: { id },
+  // Same conditional-claim pattern as approve: only the actor that flips the
+  // row off "pending" proceeds.
+  const claim = await prisma.tradeProposal.updateMany({
+    where: { id, userId: ctx.user.id, status: "pending" },
     data: { status: "declined", decidedAt: now, undoUntil },
   });
+  if (claim.count !== 1) {
+    const fresh = await prisma.tradeProposal.findFirst({ where: { id, userId: ctx.user.id } });
+    return { ok: false, error: `Already ${fresh?.status ?? ctx.p.status}` };
+  }
   await prisma.notificationLog.updateMany({ where: { proposalId: id }, data: { actedOn: true, actedAt: now } });
   revalidatePath("/alerts");
   revalidatePath("/");
@@ -206,36 +227,47 @@ export async function undoDecision(id: string): Promise<ProposalActionResult> {
     return { ok: false, error: "Undo window elapsed" };
   }
 
+  // Reading the snapshot before the claim is safe: the claim below is the
+  // gate, and once we win it no other actor can touch the undo record.
   const snapshot = fromJson<Record<string, unknown>>(ctx.p.priceSnapshot, {});
   const effect = snapshot._inventoryEffect as InventoryEffect | undefined;
-  if (effect) {
-    await reverseInventoryEffect(effect, ctx.user.id, ctx.p.cardId);
-    delete snapshot._inventoryEffect;
-  }
+  if (effect) delete snapshot._inventoryEffect;
   const priceSnapshot = toJson(snapshot);
 
-  if (now.getTime() < ctx.p.expiresAt.getTime()) {
-    await prisma.tradeProposal.update({
-      where: { id },
-      data: { status: "pending", decidedAt: null, executedAt: null, undoUntil: null, priceSnapshot },
+  const claimed = await prisma.$transaction(async (tx) => {
+    // Claim the undo window atomically — a second concurrent undo loses here.
+    const claim = await tx.tradeProposal.updateMany({
+      where: { id, userId: ctx.user.id, undoUntil: { gt: now } },
+      data: { undoUntil: null },
     });
-  } else {
-    const stat = await prisma.marketStat.findUnique({ where: { cardId: ctx.p.cardId } });
-    const current = stat?.currentPrice ?? ctx.p.proposedPrice;
-    const h = computeHindsight(ctx.p.side as Side, ctx.p.proposedPrice, current);
-    await prisma.tradeProposal.update({
-      where: { id },
-      data: {
-        status: "expired",
-        decidedAt: null,
-        executedAt: null,
-        undoUntil: null,
-        outcomePrice: current,
-        outcomeNote: h.note,
-        priceSnapshot,
-      },
-    });
-  }
+    if (claim.count !== 1) return false;
+    if (effect) await reverseInventoryEffect(tx, effect, ctx.user.id, ctx.p.cardId);
+
+    if (now.getTime() < ctx.p.expiresAt.getTime()) {
+      await tx.tradeProposal.update({
+        where: { id },
+        data: { status: "pending", decidedAt: null, executedAt: null, undoUntil: null, priceSnapshot },
+      });
+    } else {
+      const stat = await tx.marketStat.findUnique({ where: { cardId: ctx.p.cardId } });
+      const current = stat?.currentPrice ?? ctx.p.proposedPrice;
+      const h = computeHindsight(ctx.p.side as Side, ctx.p.proposedPrice, current);
+      await tx.tradeProposal.update({
+        where: { id },
+        data: {
+          status: "expired",
+          decidedAt: null,
+          executedAt: null,
+          undoUntil: null,
+          outcomePrice: current,
+          outcomeNote: h.note,
+          priceSnapshot,
+        },
+      });
+    }
+    return true;
+  });
+  if (!claimed) return { ok: false, error: "Undo window elapsed" };
   await prisma.notificationLog.updateMany({ where: { proposalId: id }, data: { actedOn: false, actedAt: null } });
   revalidatePath("/alerts");
   revalidatePath("/inventory");

@@ -498,13 +498,19 @@ export async function expireStaleProposals(now = new Date()): Promise<number> {
     where: { status: "pending", expiresAt: { lte: now } },
     include: { card: { include: { marketStat: true } } },
   });
+  let expired = 0;
   for (const p of stale) {
     const current = p.card.marketStat?.currentPrice ?? p.proposedPrice;
     const h = computeHindsight(p.side as Side, p.proposedPrice, current);
-    await prisma.tradeProposal.update({
-      where: { id: p.id },
+    // Guarded claim: only flip rows still pending, so the sweep can never
+    // clobber a proposal approved/declined since the findMany above (whose
+    // inventory effects were already applied).
+    const claim = await prisma.tradeProposal.updateMany({
+      where: { id: p.id, status: "pending" },
       data: { status: "expired", outcomePrice: current, outcomeNote: h.note },
     });
+    if (claim.count === 0) continue;
+    expired += claim.count;
     await dispatchNotification({
       userId: p.userId,
       title: `Proposal expired — ${p.card.name}`,
@@ -515,5 +521,5 @@ export async function expireStaleProposals(now = new Date()): Promise<number> {
       allowInQuietHours: false,
     });
   }
-  return stale.length;
+  return expired;
 }
