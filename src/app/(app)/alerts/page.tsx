@@ -5,7 +5,7 @@ import { NewRuleForm } from "@/components/NewRuleForm";
 import { RuleRow } from "@/components/RuleRow";
 import { Tabs } from "@/components/Tabs";
 import { EmptyState } from "@/components/states";
-import type { ProposeSide, RuleTrigger } from "@/lib/constants";
+import type { ProposeSide, RuleAction, RuleTrigger } from "@/lib/constants";
 import type { RuleParams } from "@/lib/alerts/types";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
@@ -97,11 +97,16 @@ export default async function AlertsPage({ searchParams }: { searchParams: { pro
   const ruleRows = rules.map((r) => {
     const attr = attribution.get(r.id) ?? { fired: 0, realized: 0 };
     const realized = Math.round(attr.realized);
+    const params = fromJson<RuleParams>(r.params, {});
     return {
       id: r.id,
       name: r.name,
       enabled: r.enabled,
-      desc: describeRule(r.trigger as RuleTrigger, fromJson<RuleParams>(r.params, {}), r.proposeSide as ProposeSide),
+      desc: describeRule(r.trigger as RuleTrigger, params, r.proposeSide as ProposeSide),
+      trigger: r.trigger as RuleTrigger,
+      params,
+      action: r.action as RuleAction,
+      proposeSide: r.proposeSide as ProposeSide,
       statLine: `${attr.fired}× · 30d`,
       realizedLine: realized !== 0 ? `${realized >= 0 ? "+" : "−"}$${Math.abs(realized)} realized` : "",
       statTone: realized > 0 ? ("up" as const) : realized < 0 ? ("down" as const) : undefined,
@@ -173,6 +178,10 @@ export default async function AlertsPage({ searchParams }: { searchParams: { pro
               name: r.name,
               enabled: r.enabled,
               desc: r.desc,
+              trigger: r.trigger,
+              params: r.params,
+              action: r.action,
+              proposeSide: r.proposeSide,
               statLine: r.realizedLine ? `${r.statLine} · ${r.realizedLine}` : r.statLine,
               statTone: r.statTone,
             }}
