@@ -32,6 +32,15 @@ export interface InventoryRow {
   tags: string[];
   status: string;
   listedPrice: number | null;
+  soldPrice: number | null;
+  soldAt: number | null; // epoch ms — serialize-safe across the server→client boundary
+  realizedPL: number | null; // net proceeds minus cost, sold rows only
+}
+
+/** Realized P/L for a sold holding: net proceeds minus cost. Null when the sale price was never recorded (legacy rows). */
+export function realizedPLFor(soldPrice: number | null, soldFees: number | null, costBasis: number, quantity: number): number | null {
+  if (soldPrice == null) return null;
+  return round2(soldPrice * quantity - (soldFees ?? 0) - costBasis * quantity);
 }
 
 export function parseTags(s: string): string[] {
@@ -81,7 +90,9 @@ export async function getInventoryRows(userId: string): Promise<{ rows: Inventor
       soldPrice: it.soldPrice,
       soldFees: it.soldFees,
     });
-    if (it.status === "sold") continue;
+    // Sold rows are kept (for the Sold view) but contribute nothing to
+    // mark-to-market fields so totals math stays "active holdings only".
+    const sold = it.status === "sold";
     const v = valueHolding({
       cardId: it.cardId,
       quantity: it.quantity,
@@ -104,16 +115,19 @@ export async function getInventoryRows(userId: string): Promise<{ rows: Inventor
       condition: it.condition as Condition,
       quantity: it.quantity,
       costBasis: it.costBasis,
-      marketPrice: v.marketPrice,
-      marketValue: v.marketValue,
-      unrealizedPL: v.unrealizedPL,
-      unrealizedPct: v.unrealizedPct,
+      marketPrice: sold ? null : v.marketPrice,
+      marketValue: sold ? 0 : v.marketValue,
+      unrealizedPL: sold ? 0 : v.unrealizedPL,
+      unrealizedPct: sold ? null : v.unrealizedPct,
       delta7dPct: it.card.marketStat?.delta7dPct ?? null,
       delta24hPct: it.card.marketStat?.delta24hPct ?? null,
-      spark: sparks.get(it.cardId) ?? [],
+      spark: sold ? [] : sparks.get(it.cardId) ?? [],
       tags: parseTags(it.tags),
       status: it.status,
       listedPrice: it.listedPrice,
+      soldPrice: it.soldPrice,
+      soldAt: it.soldAt ? it.soldAt.getTime() : null,
+      realizedPL: sold ? realizedPLFor(it.soldPrice, it.soldFees, it.costBasis, it.quantity) : null,
     });
   }
 

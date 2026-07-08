@@ -60,6 +60,7 @@ export function InventoryTable({
   const [game, setGame] = useState<string>("all");
   const [condition, setCondition] = useState<string>("any");
   const [pl, setPl] = useState<string>("any");
+  const [status, setStatus] = useState<string>("active");
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "unrealizedPct", dir: -1 });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [showAdd, setShowAdd] = useState(false);
@@ -73,8 +74,10 @@ export function InventoryTable({
     const out = rows.filter((r) => {
       if (game !== "all" && r.gameSlug !== game) return false;
       if (condition !== "any" && r.condition !== condition) return false;
-      if (pl === "winners" && r.unrealizedPL <= 0) return false;
-      if (pl === "losers" && r.unrealizedPL >= 0) return false;
+      if (status === "active" ? r.status === "sold" : status !== "all" && r.status !== status) return false;
+      const effectivePL = r.status === "sold" ? r.realizedPL ?? 0 : r.unrealizedPL;
+      if (pl === "winners" && effectivePL <= 0) return false;
+      if (pl === "losers" && effectivePL >= 0) return false;
       if (tagFilter !== "all" && !r.tags.includes(tagFilter)) return false;
       if (query && !fuzzy(query, `${r.name} ${r.setName} ${r.setCode} ${r.tags.join(" ")}`)) return false;
       return true;
@@ -88,19 +91,26 @@ export function InventoryTable({
       return (Number(av ?? 0) - Number(bv ?? 0)) * dir;
     });
     return out;
-  }, [rows, game, condition, pl, tagFilter, query, sort]);
+  }, [rows, game, condition, status, pl, tagFilter, query, sort]);
 
   const totals = useMemo(() => {
+    // Qty/cost/market keep "active holdings" semantics — sold rows add nothing
+    // there, only their realized P/L into the P/L $ total.
     let qty = 0;
     let cost = 0;
     let market = 0;
+    let realized = 0;
     for (const r of filtered) {
+      if (r.status === "sold") {
+        realized += r.realizedPL ?? 0;
+        continue;
+      }
       qty += r.quantity;
       cost += r.costBasis * r.quantity;
       market += r.marketValue;
     }
-    const pl$ = market - cost;
-    return { qty, cost, market, pl$, plPct: cost > 0 ? (pl$ / cost) * 100 : null };
+    const pl$ = market - cost + realized;
+    return { qty, cost, market, pl$, plPct: cost > 0 ? ((market - cost) / cost) * 100 : null };
   }, [filtered]);
 
   const toggleSort = (key: SortKey) =>
@@ -129,11 +139,15 @@ export function InventoryTable({
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
     });
-  const allVisibleSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
+  // Sold rows are read-only history: never selectable, never bulk-actionable.
+  const selectable = filtered.filter((r) => r.status !== "sold");
+  const soldIds = useMemo(() => new Set(rows.filter((r) => r.status === "sold").map((r) => r.id)), [rows]);
+  const withoutSold = (ids: string[]) => ids.filter((id) => !soldIds.has(id));
+  const allVisibleSelected = selectable.length > 0 && selectable.every((r) => selected.has(r.id));
   const toggleAll = () =>
     setSelected((s) => {
       if (allVisibleSelected) return new Set();
-      return new Set(filtered.map((r) => r.id));
+      return new Set(selectable.map((r) => r.id));
     });
 
   const run = (fn: () => Promise<unknown>) =>
@@ -242,6 +256,13 @@ export function InventoryTable({
           <option value="winners">Winners only</option>
           <option value="losers">Losers only</option>
         </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Status filter">
+          <option value="active">Status: Active</option>
+          <option value="owned">Owned</option>
+          <option value="listed">Listed</option>
+          <option value="sold">Sold</option>
+          <option value="all">All</option>
+        </select>
         {allTags.length > 0 ? (
           <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)} aria-label="Tag filter">
             <option value="all">Tag: Any</option>
@@ -264,7 +285,7 @@ export function InventoryTable({
               const price = window.prompt("List all selected for sale at (per unit)?");
               if (price == null) return;
               const n = parseFloat(price);
-              if (Number.isFinite(n)) run(() => bulkList([...selected], n).then(() => setSelected(new Set())));
+              if (Number.isFinite(n)) run(() => bulkList(withoutSold([...selected]), n).then(() => setSelected(new Set())));
             }}
           >
             List for sale
@@ -278,7 +299,7 @@ export function InventoryTable({
           >
             Add tag
           </button>
-          <button className="btn sm ghost" onClick={() => run(() => bulkDelete([...selected]).then(() => setSelected(new Set())))}>
+          <button className="btn sm ghost" onClick={() => run(() => bulkDelete(withoutSold([...selected])).then(() => setSelected(new Set())))}>
             Delete
           </button>
           <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setSelected(new Set())}>
@@ -320,7 +341,9 @@ export function InventoryTable({
                 {filtered.map((r) => (
                   <tr key={r.id}>
                     <td>
-                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} aria-label={`Select ${r.name}`} />
+                      {r.status === "sold" ? null : (
+                        <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} aria-label={`Select ${r.name}`} />
+                      )}
                     </td>
                     <td>
                       <Link href={`/cards/${r.cardId}`} style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -332,6 +355,7 @@ export function InventoryTable({
                           <span className="cset">
                             {r.setCode} · {r.rarity} · #{r.collectorNumber}
                             {r.status === "listed" && r.listedPrice ? ` · Listed ${formatMoney(r.listedPrice)}` : ""}
+                            {r.status === "sold" && r.soldPrice != null ? ` · Sold ${formatMoney(r.soldPrice)}` : ""}
                           </span>
                         </span>
                       </Link>
@@ -346,7 +370,7 @@ export function InventoryTable({
                     <td className="num">{formatMoney(r.costBasis)}</td>
                     <td className="num">{r.marketPrice != null ? formatMoney(r.marketPrice) : "—"}</td>
                     <td className="num">
-                      <Delta value={r.unrealizedPL} kind="money" />
+                      <Delta value={r.status === "sold" ? r.realizedPL : r.unrealizedPL} kind="money" />
                     </td>
                     <td className="num">
                       <Delta value={r.unrealizedPct} kind="percent" />
@@ -362,21 +386,27 @@ export function InventoryTable({
                       ))}
                     </td>
                     <td className="num" style={{ whiteSpace: "nowrap" }}>
-                      {r.status === "listed" ? (
-                        <button className="btn sm ghost" onClick={() => onSell(r)} disabled={pending}>
-                          Sell
-                        </button>
+                      {r.status === "sold" ? (
+                        <span className="hint">Sold</span>
                       ) : (
-                        <button className="btn sm pri" onClick={() => onSell(r)} disabled={pending}>
-                          Sell
-                        </button>
-                      )}{" "}
-                      <button className="btn sm ghost" onClick={() => onList(r)} disabled={pending}>
-                        List
-                      </button>{" "}
-                      <button className="btn sm ghost" onClick={() => onEdit(r)} disabled={pending}>
-                        Edit
-                      </button>
+                        <>
+                          {r.status === "listed" ? (
+                            <button className="btn sm ghost" onClick={() => onSell(r)} disabled={pending}>
+                              Sell
+                            </button>
+                          ) : (
+                            <button className="btn sm pri" onClick={() => onSell(r)} disabled={pending}>
+                              Sell
+                            </button>
+                          )}{" "}
+                          <button className="btn sm ghost" onClick={() => onList(r)} disabled={pending}>
+                            List
+                          </button>{" "}
+                          <button className="btn sm ghost" onClick={() => onEdit(r)} disabled={pending}>
+                            Edit
+                          </button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 ))}
