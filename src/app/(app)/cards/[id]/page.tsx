@@ -8,7 +8,6 @@ import { RuleBuilder } from "@/components/RuleBuilder";
 import { WatchButton } from "@/components/WatchButton";
 import {
   CONDITION_MULTIPLIER,
-  DEFAULT_FEE_PROFILES,
   marketplaceById,
   MARKETPLACES,
   type Condition,
@@ -18,6 +17,7 @@ import {
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buildDeepLink } from "@/lib/execution";
+import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { bestSpread, netProceeds, toUsd, type MarketQuote } from "@/lib/fees";
 import { formatMoney, formatRelativeTime } from "@/lib/format";
 import { round2 } from "@/lib/math";
@@ -27,7 +27,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
   const card = await prisma.card.findUnique({ where: { id: params.id }, include: { game: true, marketStat: true } });
   if (!card) notFound();
 
-  const [historyRows, latestRows, holdings, watch] = await Promise.all([
+  const [historyRows, latestRows, holdings, watch, settings] = await Promise.all([
     prisma.pricePoint.findMany({
       where: { cardId: card.id, marketplace: "tcgplayer", condition: "NM", priceType: "market" },
       orderBy: { capturedAt: "asc" },
@@ -36,7 +36,10 @@ export default async function CardDetailPage({ params }: { params: { id: string 
     prisma.pricePoint.findMany({ where: { cardId: card.id, condition: "NM" }, orderBy: { capturedAt: "desc" } }),
     prisma.inventoryItem.findMany({ where: { portfolio: { userId: user.id }, cardId: card.id, status: { in: ["owned", "listed"] } } }),
     prisma.watchlistItem.findFirst({ where: { userId: user.id, cardId: card.id } }),
+    prisma.userSettings.findUnique({ where: { userId: user.id } }),
   ]);
+
+  const profiles = mergeFeeProfiles(settings?.feeProfiles);
 
   const series = historyRows.map((r) => ({ t: r.capturedAt.getTime(), v: r.price }));
 
@@ -53,7 +56,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
     const sold = latest.get(`${m.id}:sold`);
     const primary = market ?? sold;
     if (!primary) return null;
-    const netIfSold = market ? netProceeds(toUsd(market.price, market.currency), 1, DEFAULT_FEE_PROFILES[m.id]).net : null;
+    const netIfSold = market ? netProceeds(toUsd(market.price, market.currency), 1, profiles[m.id]).net : null;
     return {
       id: m.id,
       name: m.name,
@@ -78,7 +81,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
   const quotes: MarketQuote[] = marketplaceRows
     .map((r) => (r.market ?? r.sold ? { marketplace: r.id, price: (r.market ?? r.sold)!, currency: r.currency } : null))
     .filter(Boolean) as MarketQuote[];
-  const spread = bestSpread(quotes, DEFAULT_FEE_PROFILES);
+  const spread = bestSpread(quotes, profiles);
 
   const owned = holdings.reduce((s, h) => s + h.quantity, 0);
   const avgCost = owned > 0 ? round2(holdings.reduce((s, h) => s + h.costBasis * h.quantity, 0) / owned) : null;
@@ -87,7 +90,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
   const freshness = latest.get("tcgplayer:market")?.capturedAt
     ? formatRelativeTime(latest.get("tcgplayer:market")!.capturedAt)
     : "—";
-  const estNet = netProceeds(price, Math.max(1, owned), DEFAULT_FEE_PROFILES.tcgplayer).net;
+  const estNet = netProceeds(price, Math.max(1, owned), profiles.tcgplayer).net;
 
   const sellLink = buildDeepLink("tcgplayer", "sell", { name: card.name, setName: card.setName, setCode: card.setCode, gameSlug: card.game.slug as GameSlug });
   const buyLink = buildDeepLink("tcgplayer", "buy", { name: card.name, setName: card.setName, setCode: card.setCode, gameSlug: card.game.slug as GameSlug });
@@ -155,7 +158,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
                 <b>{formatMoney(spread.sellPrice)}</b>
               </div>
               <div className="sline">
-                <span>Fees + shipping (default profile)</span>
+                <span>Fees + shipping (your profile)</span>
                 <b>−{formatMoney(spread.fees)}</b>
               </div>
               <div className="sline total">
@@ -199,7 +202,7 @@ export default async function CardDetailPage({ params }: { params: { id: string 
       <div className="panel">
         <h2>Marketplace prices — NM unless noted</h2>
         <div className="hint" style={{ marginBottom: 12 }}>
-          Net = after the default fee &amp; shipping profile (tune it in Settings).
+          Net = after your fee &amp; shipping profile (tune it in Settings).
         </div>
         <div style={{ overflowX: "auto" }}>
           <table>
