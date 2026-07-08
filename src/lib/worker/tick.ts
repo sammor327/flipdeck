@@ -10,11 +10,11 @@
 
 import { prisma } from "../db";
 import type { Condition, GameSlug, Marketplace, ProposeSide, RuleTrigger, Side } from "../constants";
-import { DEFAULT_FEE_PROFILES } from "../constants";
 import { evaluateRule } from "../alerts/evaluate";
 import type { EvalContext, RuleParams } from "../alerts/types";
 import { computeHindsight } from "../alerts/expiry";
 import { buyEdge, netProceeds } from "../fees";
+import { mergeFeeProfiles } from "../feeProfiles";
 import { checkProposalGuardrails } from "../guardrails";
 import { fromJson, toJson } from "../json";
 import { HOUR_MS, minOver, moveOverWindow, round2, type PricePointLite } from "../math";
@@ -288,11 +288,12 @@ async function createProposal(
     return null;
   }
 
-  const fee = DEFAULT_FEE_PROFILES[marketplace];
+  const profiles = mergeFeeProfiles(settings?.feeProfiles);
+  const fee = profiles[marketplace];
   const netAfterFees =
     side === "sell"
       ? netProceeds(price, quantity, fee).net
-      : buyEdge(price, quantity, stat.median90d ?? price, marketplace).net;
+      : buyEdge(price, quantity, stat.median90d ?? price, marketplace, profiles).net;
 
   const exec = resolveExecution({
     marketplace,
