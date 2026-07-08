@@ -1,6 +1,7 @@
-// Yu-Gi-Oh! via YGOPRODeck (free). Returns TCGplayer / Cardmarket / eBay average
-// prices per card (all USD). No listing counts. Please cache aggressively and
-// attribute per their terms. Docs: https://ygoprodeck.com/api-guide/
+// Yu-Gi-Oh! via YGOPRODeck (free). Returns TCGplayer / eBay average prices in
+// USD and the Cardmarket average in EUR (normalized to USD downstream via
+// toUsd). No listing counts. Please cache aggressively and attribute per their
+// terms. Docs: https://ygoprodeck.com/api-guide/
 
 import type { GameSlug } from "../constants";
 import { num, safeFetchJson } from "./http";
@@ -35,7 +36,7 @@ export class YgoprodeckProvider implements PriceProvider {
     const cm = num(prices.cardmarket_price);
     const eb = num(prices.ebay_price);
     if (tcg) out.push({ marketplace: "tcgplayer", condition: "NM", priceType: "market", price: tcg, currency: "USD", capturedAt: now });
-    if (cm) out.push({ marketplace: "cardmarket", condition: "NM", priceType: "market", price: cm, currency: "USD", capturedAt: now });
+    if (cm) out.push({ marketplace: "cardmarket", condition: "NM", priceType: "market", price: cm, currency: "EUR", capturedAt: now });
     if (eb) out.push({ marketplace: "ebay", condition: "NM", priceType: "sold", price: eb, currency: "USD", capturedAt: now });
     return out;
   }

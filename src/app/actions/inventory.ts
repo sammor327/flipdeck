@@ -1,11 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Condition, FeeProfile, Marketplace } from "@/lib/constants";
-import { DEFAULT_FEE_PROFILES, normalizeCondition } from "@/lib/constants";
+import type { Condition, Marketplace } from "@/lib/constants";
+import { MARKETPLACES, normalizeCondition } from "@/lib/constants";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { fromJson } from "@/lib/json";
+import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { netProceeds } from "@/lib/fees";
 import { round2 } from "@/lib/math";
 
@@ -16,11 +16,10 @@ async function portfolioId(userId: string): Promise<string> {
   return created.id;
 }
 
-async function feeProfiles(userId: string): Promise<Record<Marketplace, FeeProfile>> {
-  const s = await prisma.userSettings.findUnique({ where: { userId } });
-  const parsed = s ? fromJson<Partial<Record<Marketplace, FeeProfile>>>(s.feeProfiles, {}) : {};
-  return { ...DEFAULT_FEE_PROFILES, ...parsed };
-}
+// Validation at the write boundary: a NaN/negative price or an unrecognized
+// marketplace string must never reach money math or the DB.
+const isValidPrice = (price: number) => Number.isFinite(price) && price > 0;
+const isKnownMarketplace = (marketplace: string) => MARKETPLACES.some((m) => m.id === marketplace);
 
 async function ownItem(id: string) {
   const user = await getCurrentUser();
@@ -83,6 +82,8 @@ export async function updateInventoryItem(
 }
 
 export async function listInventoryItem(id: string, price: number, marketplace: Marketplace = "tcgplayer") {
+  if (!isValidPrice(price)) return { ok: false, error: "Enter a valid price" };
+  if (!isKnownMarketplace(marketplace)) return { ok: false, error: "Unknown marketplace" };
   const ctx = await ownItem(id);
   if (!ctx) return { ok: false, error: "Not found" };
   await prisma.inventoryItem.update({
@@ -102,11 +103,13 @@ export async function unlistInventoryItem(id: string) {
 }
 
 export async function sellInventoryItem(id: string, soldPrice: number, marketplace: Marketplace = "tcgplayer") {
+  if (!isValidPrice(soldPrice)) return { ok: false, error: "Enter a valid price" };
+  if (!isKnownMarketplace(marketplace)) return { ok: false, error: "Unknown marketplace" };
   const ctx = await ownItem(id);
   if (!ctx) return { ok: false, error: "Not found" };
-  const profiles = await feeProfiles(ctx.user.id);
-  const fee = profiles[marketplace] ?? DEFAULT_FEE_PROFILES[marketplace];
-  const proceeds = netProceeds(soldPrice, ctx.item.quantity, fee);
+  const settings = await prisma.userSettings.findUnique({ where: { userId: ctx.user.id } });
+  const profiles = mergeFeeProfiles(settings?.feeProfiles);
+  const proceeds = netProceeds(soldPrice, ctx.item.quantity, profiles[marketplace]);
   await prisma.inventoryItem.update({
     where: { id },
     data: {
@@ -154,6 +157,7 @@ export async function bulkAddTag(ids: string[], tag: string) {
 }
 
 export async function bulkList(ids: string[], price: number) {
+  if (!isValidPrice(price)) return { ok: false, error: "Enter a valid price", count: 0 };
   const user = await getCurrentUser();
   if (!user) return { ok: false, error: "Not signed in" };
   const valid = await ownedIds(ids, user.id);

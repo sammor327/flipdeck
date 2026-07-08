@@ -28,3 +28,22 @@ export function mergeFeeProfiles(feeProfilesJson: string | null | undefined): Re
   }
   return merged;
 }
+
+/**
+ * Sanitize untrusted fee-profile overrides (e.g. a client payload) before they
+ * are persisted: keep only known marketplace keys whose value has all three
+ * finite fields, and copy just those fields. Unknown keys, partial profiles,
+ * and non-finite values are dropped so stored overrides can never NaN-poison
+ * money math downstream.
+ */
+export function sanitizeFeeProfileOverrides(overrides: unknown): Partial<Record<Marketplace, FeeProfile>> {
+  const out: Partial<Record<Marketplace, FeeProfile>> = {};
+  if (typeof overrides !== "object" || overrides == null) return out;
+  for (const m of MARKETPLACES) {
+    const candidate = (overrides as Record<string, unknown>)[m.id];
+    if (isValidProfile(candidate)) {
+      out[m.id] = { feePct: candidate.feePct, paymentFeePct: candidate.paymentFeePct, shippingFlat: candidate.shippingFlat };
+    }
+  }
+  return out;
+}

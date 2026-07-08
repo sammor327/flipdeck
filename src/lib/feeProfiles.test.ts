@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_FEE_PROFILES } from "./constants";
-import { mergeFeeProfiles } from "./feeProfiles";
+import { mergeFeeProfiles, sanitizeFeeProfileOverrides } from "./feeProfiles";
 
 const ebayOverride = { feePct: 10, paymentFeePct: 1.5, shippingFlat: 2 };
 
@@ -36,5 +36,36 @@ describe("mergeFeeProfiles", () => {
     const merged = mergeFeeProfiles(JSON.stringify({ ebay: ebayOverride }));
     merged.tcgplayer = ebayOverride;
     expect(DEFAULT_FEE_PROFILES).toEqual(before);
+  });
+});
+
+describe("sanitizeFeeProfileOverrides", () => {
+  it("keeps a complete valid override", () => {
+    expect(sanitizeFeeProfileOverrides({ ebay: ebayOverride })).toEqual({ ebay: ebayOverride });
+  });
+
+  it("drops partial profiles (missing fields)", () => {
+    expect(sanitizeFeeProfileOverrides({ tcgplayer: { feePct: 12 } })).toEqual({});
+  });
+
+  it("drops unknown marketplace keys", () => {
+    expect(sanitizeFeeProfileOverrides({ amazon: ebayOverride })).toEqual({});
+  });
+
+  it("drops profiles with non-finite or non-numeric fields", () => {
+    expect(sanitizeFeeProfileOverrides({ ebay: { feePct: NaN, paymentFeePct: 1, shippingFlat: 0 } })).toEqual({});
+    expect(sanitizeFeeProfileOverrides({ ebay: { feePct: Infinity, paymentFeePct: 1, shippingFlat: 0 } })).toEqual({});
+    expect(sanitizeFeeProfileOverrides({ ebay: { feePct: "10", paymentFeePct: 1, shippingFlat: 0 } })).toEqual({});
+  });
+
+  it("strips extraneous fields from a kept profile", () => {
+    expect(sanitizeFeeProfileOverrides({ ebay: { ...ebayOverride, sneaky: "extra" } })).toEqual({ ebay: ebayOverride });
+  });
+
+  it("returns an empty object for non-object input", () => {
+    expect(sanitizeFeeProfileOverrides(null)).toEqual({});
+    expect(sanitizeFeeProfileOverrides(undefined)).toEqual({});
+    expect(sanitizeFeeProfileOverrides(42)).toEqual({});
+    expect(sanitizeFeeProfileOverrides("ebay")).toEqual({});
   });
 });
