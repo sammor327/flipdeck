@@ -89,3 +89,28 @@ describe("valuation with a bogus persisted condition", () => {
     expect(s.unrealizedPct == null || Number.isFinite(s.unrealizedPct)).toBe(true);
   });
 });
+
+describe("summarize realized P/L", () => {
+  const sold: HoldingInput = {
+    cardId: "c1",
+    quantity: 3,
+    condition: "NM",
+    costBasis: 10,
+    status: "sold",
+    nmMarketPrice: null,
+    soldPrice: 15,
+    soldFees: 2,
+  };
+
+  it("books proceeds minus fees minus cost for a priced sale", () => {
+    // 3 × $15 − $2 fees − 3 × $10 cost = $13
+    expect(summarize([sold]).realizedPL).toBe(13);
+  });
+
+  it("skips legacy sold rows with no recorded sale price", () => {
+    // A null soldPrice means the sale price was never recorded — it must not
+    // book a fabricated total loss, matching realizedPLFor()'s null.
+    expect(summarize([{ ...sold, soldPrice: null }]).realizedPL).toBe(0);
+    expect(summarize([sold, { ...sold, cardId: "c2", soldPrice: null }]).realizedPL).toBe(13);
+  });
+});

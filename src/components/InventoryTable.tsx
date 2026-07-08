@@ -14,6 +14,7 @@ import {
   importInventoryCsv,
   listInventoryItem,
   sellInventoryItem,
+  unlistInventoryItem,
   updateInventoryItem,
 } from "@/app/actions/inventory";
 import { CardArt } from "./CardArt";
@@ -84,11 +85,20 @@ export function InventoryTable({
     });
     out.sort((a, b) => {
       const dir = sort.dir;
-      // "game" sorts by display name; every other SortKey is a real InventoryRow field.
-      const av: string | number | null = sort.key === "game" ? a.gameName : a[sort.key];
-      const bv: string | number | null = sort.key === "game" ? b.gameName : b[sort.key];
+      // "game" sorts by display name; "unrealizedPL" sorts by what the P/L $ cell
+      // shows (realized P/L for sold rows); every other SortKey is a real InventoryRow field.
+      const sortVal = (r: InventoryRow): string | number | null => {
+        if (sort.key === "game") return r.gameName;
+        if (sort.key === "unrealizedPL") return r.status === "sold" ? r.realizedPL : r.unrealizedPL;
+        return r[sort.key];
+      };
+      const av = sortVal(a);
+      const bv = sortVal(b);
       if (typeof av === "string" && typeof bv === "string") return av.localeCompare(bv) * dir;
-      return (Number(av ?? 0) - Number(bv ?? 0)) * dir;
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1; // nulls last
+      if (bv == null) return -1;
+      return (Number(av) - Number(bv)) * dir;
     });
     return out;
   }, [rows, game, condition, status, pl, tagFilter, query, sort]);
@@ -399,6 +409,13 @@ export function InventoryTable({
                               Sell
                             </button>
                           )}{" "}
+                          {r.status === "listed" ? (
+                            <>
+                              <button className="btn sm ghost" onClick={() => run(() => unlistInventoryItem(r.id))} disabled={pending}>
+                                Unlist
+                              </button>{" "}
+                            </>
+                          ) : null}
                           <button className="btn sm ghost" onClick={() => onList(r)} disabled={pending}>
                             List
                           </button>{" "}
