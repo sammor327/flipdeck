@@ -8,6 +8,7 @@ import { bestSpread, toUsd, type MarketQuote } from "./fees";
 import {
   computeDeltas,
   estimateSalesPerDay,
+  HOUR_MS,
   liquidityScore,
   maxOver,
   median,
@@ -50,9 +51,15 @@ export interface MarketStatComputed {
 const DEFAULT_MARKETPLACE: Marketplace = "tcgplayer";
 const DEFAULT_CONDITION: Condition = "NM";
 
+// Quotes older than this cannot participate in the cross-market spread: the
+// worker refreshes hourly, so 48h tolerates weekend gaps while keeping a
+// weeks-old cardmarket/eBay capture from pairing with today's quote and
+// fabricating arbitrage.
+export const SPREAD_FRESHNESS_MS = 48 * HOUR_MS;
+
 export function computeMarketStat(
   points: StatPoint[],
-  opts: { marketplace?: Marketplace; condition?: Condition; now?: Date } = {}
+  opts: { marketplace?: Marketplace; condition?: Condition; now?: Date; maxQuoteAgeMs?: number } = {}
 ): MarketStatComputed | null {
   const marketplace = opts.marketplace ?? DEFAULT_MARKETPLACE;
   const condition = opts.condition ?? DEFAULT_CONDITION;
@@ -70,11 +77,16 @@ export function computeMarketStat(
   const listingCount = primary[primary.length - 1].listingCount ?? null;
   const salesPerDay = estimateSalesPerDay(primary, 7, opts.now);
 
-  // Best executable cross-market spread from the latest quote per marketplace.
+  // Best executable cross-market spread from the latest FRESH quote per
+  // marketplace. Stale quotes are dropped entirely so they can't pair with a
+  // live one; the primary series above is deliberately unaffected.
+  const maxQuoteAgeMs = opts.maxQuoteAgeMs ?? SPREAD_FRESHNESS_MS;
+  const nowMs = (opts.now ?? primary[primary.length - 1].capturedAt).getTime();
   const latestByMarket = new Map<Marketplace, StatPoint>();
   for (const p of points) {
     if (p.condition !== condition) continue;
     if (p.priceType !== "market" && p.priceType !== "sold") continue;
+    if (nowMs - p.capturedAt.getTime() > maxQuoteAgeMs) continue;
     const cur = latestByMarket.get(p.marketplace);
     if (!cur || p.capturedAt.getTime() > cur.capturedAt.getTime()) latestByMarket.set(p.marketplace, p);
   }
