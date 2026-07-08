@@ -37,6 +37,8 @@ type SortKey = "name" | "game" | "condition" | "quantity" | "costBasis" | "marke
 
 type PanelKind = "sell" | "list" | "edit";
 
+type BulkMode = "list" | "tag" | "delete";
+
 function fuzzy(query: string, text: string): boolean {
   const q = query.toLowerCase().trim();
   if (!q) return true;
@@ -73,6 +75,14 @@ export function InventoryTable({
   const [panel, setPanel] = useState<{ rowId: string; kind: PanelKind } | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [importMsg, setImportMsg] = useState<string | null>(null);
+  // Inline mini-form state for the bulk bar. Replaces the old window.prompt
+  // flows: which action is being confirmed, its input value, and any server
+  // error to surface right where the user acted.
+  const [bulkMode, setBulkMode] = useState<BulkMode | null>(null);
+  const [bulkPrice, setBulkPrice] = useState("");
+  const [bulkTag, setBulkTag] = useState("");
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const allTags = useMemo(() => [...new Set(rows.flatMap((r) => r.tags))].sort(), [rows]);
@@ -167,11 +177,91 @@ export function InventoryTable({
       return new Set(selectable.map((r) => r.id));
     });
 
-  const run = (fn: () => Promise<unknown>) =>
+  // What the selection is worth right now, shown next to "N selected". Rows
+  // without a live market price fall back to cost so the total never reads $0
+  // for cards that simply haven't priced yet.
+  const selectedValue = useMemo(() => {
+    let sum = 0;
+    for (const r of rows) {
+      if (!selected.has(r.id)) continue;
+      sum += r.marketPrice != null ? r.marketValue : r.costBasis * r.quantity;
+    }
+    return sum;
+  }, [rows, selected]);
+
+  const run = (fn: () => Promise<{ ok: boolean; error?: string }>) =>
     startTransition(async () => {
-      await fn();
+      const res = await fn();
+      if (!res.ok) setBulkMsg(res.error ?? "Something went wrong");
       router.refresh();
     });
+
+  const openBulkMode = (mode: BulkMode) => {
+    setBulkError(null);
+    setBulkMsg(null);
+    if (mode === "list") setBulkPrice("");
+    if (mode === "tag") setBulkTag("");
+    setBulkMode(mode);
+  };
+  const closeBulkMode = () => {
+    setBulkMode(null);
+    setBulkError(null);
+  };
+
+  // Mirrors bulkList's isValidPrice guard so Confirm disables before the
+  // server would reject anyway.
+  const parsedBulkPrice = parseFloat(bulkPrice);
+  const bulkPriceValid = Number.isFinite(parsedBulkPrice) && parsedBulkPrice > 0;
+  const bulkTagValid = bulkTag.trim().length > 0;
+  const actionableCount = withoutSold([...selected]).length;
+
+  const runBulk = (
+    label: (count: number) => string,
+    fn: (ids: string[]) => Promise<{ ok: boolean; error?: string; count?: number }>
+  ) => {
+    const ids = withoutSold([...selected]);
+    // A status-filter change can leave only sold rows selected; don't call the
+    // action with nothing actionable.
+    if (ids.length === 0) {
+      setBulkError("Only sold cards are selected — nothing to change.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await fn(ids);
+      if (!res.ok) {
+        setBulkError(res.error ?? "Something went wrong");
+        return;
+      }
+      setSelected(new Set());
+      closeBulkMode();
+      setBulkMsg(label(res.count ?? ids.length));
+      router.refresh();
+    });
+  };
+
+  const confirmBulk = () => {
+    if (pending) return;
+    if (bulkMode === "list" && bulkPriceValid) {
+      runBulk((n) => `Listed ${n} card${n === 1 ? "" : "s"}.`, (ids) => bulkList(ids, parsedBulkPrice));
+    } else if (bulkMode === "tag" && bulkTagValid) {
+      runBulk((n) => `Tagged ${n} card${n === 1 ? "" : "s"}.`, (ids) => bulkAddTag(ids, bulkTag.trim()));
+    } else if (bulkMode === "delete") {
+      runBulk((n) => `Deleted ${n} card${n === 1 ? "" : "s"}.`, (ids) => bulkDelete(ids));
+    }
+  };
+
+  const bulkInputKeys = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      confirmBulk();
+    } else if (e.key === "Escape") {
+      // Cancel just the mini-form — never let Escape bubble up and clear the
+      // selection the user built.
+      e.preventDefault();
+      e.stopPropagation();
+      closeBulkMode();
+    }
+  };
 
   const openPanel = (r: InventoryRow, kind: PanelKind) => setPanel({ rowId: r.id, kind });
 
@@ -272,43 +362,136 @@ export function InventoryTable({
         ) : null}
       </div>
 
+      {bulkMsg ? (
+        <div className="bulk" style={{ marginBottom: 12 }} role="status">
+          {bulkMsg}
+          <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setBulkMsg(null)}>
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       {/* Bulk bar */}
       {selected.size > 0 ? (
         <div className="bulk" style={{ marginBottom: 12 }}>
           <b>{selected.size} selected</b>
-          <button
-            className="btn sm"
-            onClick={() => {
-              const price = window.prompt("List all selected for sale at (per unit)?");
-              if (price == null) return;
-              const n = parseFloat(price);
-              if (Number.isFinite(n)) run(() => bulkList(withoutSold([...selected]), n).then(() => setSelected(new Set())));
-            }}
-          >
-            List for sale
-          </button>
-          <button
-            className="btn sm ghost"
-            onClick={() => {
-              const tag = window.prompt("Add tag to selected:");
-              if (tag) run(() => bulkAddTag([...selected], tag).then(() => setSelected(new Set())));
-            }}
-          >
-            Add tag
-          </button>
-          <button className="btn sm ghost" onClick={() => run(() => bulkDelete(withoutSold([...selected])).then(() => setSelected(new Set())))}>
-            Delete
-          </button>
-          <button className="btn sm ghost" style={{ marginLeft: "auto" }} onClick={() => setSelected(new Set())}>
-            Clear
-          </button>
+          <span className="hint">{formatMoney(selectedValue)} market value</span>
+          {bulkMode === null ? (
+            <>
+              <button className="btn sm" onClick={() => openBulkMode("list")} disabled={pending}>
+                List for sale
+              </button>
+              <button className="btn sm ghost" onClick={() => openBulkMode("tag")} disabled={pending}>
+                Add tag
+              </button>
+              <button className="btn sm ghost" onClick={() => openBulkMode("delete")} disabled={pending}>
+                Delete
+              </button>
+              <button
+                className="btn sm ghost"
+                style={{ marginLeft: "auto" }}
+                onClick={() => {
+                  setSelected(new Set());
+                  closeBulkMode();
+                }}
+              >
+                Clear
+              </button>
+            </>
+          ) : bulkMode === "list" ? (
+            <>
+              <label className="hint" htmlFor="bulk-list-price">
+                Price / unit
+              </label>
+              <input
+                id="bulk-list-price"
+                autoFocus
+                type="number"
+                min={0}
+                step="0.01"
+                value={bulkPrice}
+                onChange={(e) => setBulkPrice(e.target.value)}
+                onKeyDown={bulkInputKeys}
+                style={{ width: 110 }}
+              />
+              <button className="btn sm pri" onClick={confirmBulk} disabled={pending || !bulkPriceValid}>
+                Confirm
+              </button>
+              <button className="btn sm ghost" onClick={closeBulkMode} disabled={pending}>
+                Cancel
+              </button>
+            </>
+          ) : bulkMode === "tag" ? (
+            <>
+              <label className="hint" htmlFor="bulk-tag">
+                Tag
+              </label>
+              <input
+                id="bulk-tag"
+                autoFocus
+                value={bulkTag}
+                onChange={(e) => setBulkTag(e.target.value)}
+                onKeyDown={bulkInputKeys}
+                placeholder="binder-A"
+                style={{ width: 140 }}
+              />
+              <button className="btn sm pri" onClick={confirmBulk} disabled={pending || !bulkTagValid}>
+                Confirm
+              </button>
+              <button className="btn sm ghost" onClick={closeBulkMode} disabled={pending}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              <b>
+                Delete {actionableCount} card{actionableCount === 1 ? "" : "s"}?
+              </b>
+              <button
+                className="btn sm"
+                style={{ background: "var(--bad)", borderColor: "var(--bad)", color: "#fff" }}
+                onClick={confirmBulk}
+                disabled={pending}
+              >
+                Confirm delete
+              </button>
+              <button className="btn sm ghost" onClick={closeBulkMode} disabled={pending}>
+                Cancel
+              </button>
+            </>
+          )}
+          {bulkError ? (
+            <span className="down" role="alert">
+              {bulkError}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
       {/* Table */}
       <div className="panel" style={{ overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
-          {filtered.length === 0 ? (
+          {rows.length === 0 ? (
+            // First run: the inventory itself is empty, not just filtered to
+            // nothing — onboard instead of suggesting filter tweaks.
+            <div style={{ padding: 20 }}>
+              <EmptyState
+                icon="🃏"
+                title="No cards yet"
+                hint="Add your first card or import a CSV to start tracking value and P/L."
+                action={
+                  <>
+                    <button className="btn pri" onClick={() => setShowAdd(true)}>
+                      + Add cards
+                    </button>{" "}
+                    <button className="btn ghost" onClick={() => fileRef.current?.click()}>
+                      Import CSV
+                    </button>
+                  </>
+                }
+              />
+            </div>
+          ) : filtered.length === 0 ? (
             <div style={{ padding: 20 }}>
               <EmptyState icon="🔍" title="No cards match" hint="Try clearing filters or your search." />
             </div>
@@ -588,6 +771,7 @@ function AddCardForm({ catalog, onDone }: { catalog: CatalogEntry[]; onDone: () 
   const [condition, setCondition] = useState<Condition>("NM");
   const [costBasis, setCostBasis] = useState(0);
   const [tags, setTags] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const matches = useMemo(() => {
     if (!q.trim()) return [];
@@ -595,9 +779,14 @@ function AddCardForm({ catalog, onDone }: { catalog: CatalogEntry[]; onDone: () 
   }, [q, catalog]);
 
   const submit = () => {
-    if (!picked) return;
+    if (!picked || pending) return;
     startTransition(async () => {
-      await addInventoryItem({ cardId: picked.id, quantity, condition, costBasis, tags });
+      const res = await addInventoryItem({ cardId: picked.id, quantity, condition, costBasis, tags });
+      // Keep the form open on failure so nothing the user typed is lost.
+      if (!res.ok) {
+        setError(res.error ?? "Something went wrong");
+        return;
+      }
       onDone();
       router.refresh();
     });
@@ -624,6 +813,7 @@ function AddCardForm({ catalog, onDone }: { catalog: CatalogEntry[]; onDone: () 
           </div>
         </>
       ) : (
+        <>
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr auto", gap: 8, alignItems: "end" }}>
           <div>
             <label className="hint">Card</label>
@@ -658,6 +848,12 @@ function AddCardForm({ catalog, onDone }: { catalog: CatalogEntry[]; onDone: () 
             Add
           </button>
         </div>
+        {error ? (
+          <div className="down" role="alert" style={{ marginTop: 8 }}>
+            {error}
+          </div>
+        ) : null}
+        </>
       )}
     </div>
   );
