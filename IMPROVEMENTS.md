@@ -79,3 +79,27 @@ Tests: 63 → 80 passing.
    shows stale rows. +6 tests.
 
 Tests: 80 → 97 passing.
+
+## Cycle 4 — 2026-07-08 ~00:17–00:50 (critique mode)
+
+Fresh 4-critic sweep: 29 findings → 3 selected, 3 implemented, 3 approved,
+3 merged. Backlog rebuilt from re-verified deferred list.
+
+1. **Atomic proposal lifecycle** — approve/decline/undo/expire were racy:
+   double-click or concurrent approve could double-apply inventory effects.
+   All transitions now use conditional-claim `updateMany` (+transactions
+   around claim + inventory effects), losers get "Already <status>" /
+   "Undo window elapsed". Worker expiry sweep can no longer clobber a row
+   approved mid-sweep. +8 tests (incl. concurrent double-approve/undo).
+2. **Money-input hardening** — sell flow's local fee merge could NaN
+   `soldFees` from partial overrides (now uses `mergeFeeProfiles`); prices
+   and marketplaces validated at every write boundary; settings updates
+   validate spend cap, clamp quiet hours, sanitize fee-profile JSON,
+   whitelist marketplaces; YGOPRODeck cardmarket quotes fixed USD → EUR.
+   +6 tests.
+3. **Approve deep-link recovery** — the post-approve `window.open` was
+   popup-blocked in every browser (user gesture consumed by the server
+   action), dead-ending the act loop. Now an "Open listing ↗" button on the
+   undo bar and a recoverable link in alert history.
+
+Tests: 97 → 111 passing.
