@@ -14,6 +14,7 @@
 // fees, expiry) so this file is orchestration + I/O only.
 
 import { prisma } from "../db";
+import { marketplaceById } from "../constants";
 import type { Condition, GameSlug, Marketplace, ProposeSide, RuleTrigger, Side } from "../constants";
 import { evaluateRule } from "../alerts/evaluate";
 import type { EvalContext, RuleParams } from "../alerts/types";
@@ -335,7 +336,12 @@ export async function evaluateAllRules(now = new Date()): Promise<{ rulesEvaluat
         });
         if (existing) continue;
 
-        const created = await createProposal(rule, cardId, result.side, stat, result.reason ?? rule.name, result.evidence, now, claimCooldown);
+        // Spread fires carry the spread that tripped the rule so the proposal
+        // IS the arbitrage (buy/sell leg marketplace + price), not a generic
+        // currentPrice trade. userSpreads is non-null only for spread rules,
+        // and bestSpreadPct came from this same map, so the lookup hits.
+        const spread = userSpreads?.get(cardId);
+        const created = await createProposal(rule, cardId, result.side, stat, result.reason ?? rule.name, result.evidence, now, claimCooldown, spread);
         if (created) proposalsCreated++;
       }
     } catch (err) {
@@ -517,6 +523,11 @@ function expiresInMinutes(expiresAt: Date, now: Date): number {
   return Math.round((expiresAt.getTime() - now.getTime()) / 60000);
 }
 
+/** Display name for a marketplace id, e.g. "tcgplayer" → "TCGplayer". */
+function marketplaceName(id: Marketplace): string {
+  return marketplaceById(id)?.name ?? id;
+}
+
 /**
  * Spend already committed today: pending + approved buys created since
  * server-local midnight (the cap is a per-calendar-day limit in the server's
@@ -537,6 +548,10 @@ async function buysCommittedTodayFor(userId: string, now: Date): Promise<number>
  * compare-and-set (see evaluateAllRules); it runs strictly AFTER the guardrail
  * check so blocked fires never consume the rule's cooldown, and strictly BEFORE
  * the create so a lost claim (another process fired first) creates nothing.
+ *
+ * `spread` is the owner's cross-market spread that tripped a spread rule: the
+ * proposal then targets the arbitrage's own legs — buy leg for buys, sell leg
+ * for sells — instead of rule.marketplace at currentPrice.
  */
 async function createProposal(
   rule: { id: string; userId: string; name: string; quantity: number; marketplace: string | null; proposalExpiryMinutes: number; quietHoursRespected: boolean },
@@ -546,7 +561,8 @@ async function createProposal(
   reason: string,
   evidence: Record<string, string | number>,
   now: Date,
-  claim: () => Promise<boolean>
+  claim: () => Promise<boolean>,
+  spread?: UserSpread
 ) {
   const card = await prisma.card.findUnique({ where: { id: cardId }, include: { game: true } });
   if (!card) return null;
@@ -554,8 +570,18 @@ async function createProposal(
   // Safety guardrails (kill switch + daily spend cap). No settings row means no blocks.
   const settings = await prisma.userSettings.findUnique({ where: { userId: rule.userId } });
 
-  const marketplace = (rule.marketplace as Marketplace) || "tcgplayer";
-  const price = round2(stat.currentPrice);
+  // The spread's legs win even over an explicitly-set rule.marketplace: the
+  // arbitrage IS the proposal, and it only exists at its own two venues.
+  // Prices are already USD-normalized (userBestSpreads → computeSpread), and
+  // are resolved BEFORE the guardrail check below so the daily spend cap sees
+  // the real buy cost. Fallback when `spread` is undefined (shouldn't happen —
+  // a spread fire's bestSpreadPct came from the same map): old behavior.
+  const marketplace: Marketplace = spread
+    ? side === "buy"
+      ? spread.buyMarketplace
+      : spread.sellMarketplace
+    : (rule.marketplace as Marketplace) || "tcgplayer";
+  const price = spread ? round2(side === "buy" ? spread.buyPrice : spread.sellPrice) : round2(stat.currentPrice);
 
   // Quantity: never propose selling more than the user holds.
   let quantity = Math.max(1, rule.quantity);
@@ -588,10 +614,14 @@ async function createProposal(
 
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
   const fee = profiles[marketplace];
+  // Spread buys net what the arb actually clears per copy (already computed
+  // under the owner's fee profiles); sells net the sell leg's proceeds.
   const netAfterFees =
     side === "sell"
       ? netProceeds(price, quantity, fee).net
-      : buyEdge(price, quantity, stat.median90d ?? price, marketplace, profiles).net;
+      : spread
+        ? round2(spread.netPerCopy * quantity)
+        : buyEdge(price, quantity, stat.median90d ?? price, marketplace, profiles).net;
 
   const exec = resolveExecution({
     marketplace,
@@ -602,6 +632,12 @@ async function createProposal(
   // Quiet-hours-held pushes get an actionable expiry: pending until 30 min
   // after the window ends, so the morning flush lands on a live proposal.
   const expiresAt = proposalExpiry(settings, rule.quietHoursRespected, rule.proposalExpiryMinutes, now);
+
+  // A spread rationale names both legs — the trade the user approves is the
+  // arbitrage that fired, not a single-market price signal.
+  const rationale = spread
+    ? `${rule.name} — Buy ${marketplaceName(spread.buyMarketplace)} @ ${formatMoney(spread.buyPrice)} → sell ${marketplaceName(spread.sellMarketplace)} @ ${formatMoney(spread.sellPrice)}, net ${formatSignedMoney(spread.netPerCopy)}/copy after your fees`
+    : `${rule.name} — ${reason}`;
 
   const proposal = await prisma.tradeProposal.create({
     data: {
@@ -614,7 +650,7 @@ async function createProposal(
       marketplace,
       deepLink: exec.url,
       executionMode: exec.mode,
-      rationale: `${rule.name} — ${reason}`,
+      rationale,
       priceSnapshot: toJson({
         price,
         delta24hPct: stat.delta24hPct,
@@ -623,6 +659,16 @@ async function createProposal(
         low90d: stat.low90d,
         median90d: stat.median90d,
         ...evidence,
+        ...(spread
+          ? {
+              buyMarketplace: spread.buyMarketplace,
+              sellMarketplace: spread.sellMarketplace,
+              buyPrice: round2(spread.buyPrice),
+              sellPrice: round2(spread.sellPrice),
+              netPct: spread.netPct,
+              netPerCopy: spread.netPerCopy,
+            }
+          : {}),
       }),
       netAfterFees,
       costBasis,
