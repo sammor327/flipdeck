@@ -1,15 +1,18 @@
 import { InventoryTable, type CatalogEntry } from "@/components/InventoryTable";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { formatMoney } from "@/lib/format";
 import { getInventoryRows } from "@/lib/queries";
 
 export default async function InventoryPage({ searchParams }: { searchParams: { q?: string } }) {
   const user = (await getCurrentUser())!;
-  const [{ rows, summary }, cards] = await Promise.all([
+  const [{ rows, summary }, cards, settings] = await Promise.all([
     getInventoryRows(user.id),
     prisma.card.findMany({ include: { game: true }, orderBy: { name: "asc" } }),
+    prisma.userSettings.findUnique({ where: { userId: user.id } }),
   ]);
+  const feeProfiles = mergeFeeProfiles(settings?.feeProfiles);
 
   const catalog: CatalogEntry[] = cards.map((c) => ({
     id: c.id,
@@ -58,7 +61,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: { 
         </div>
       </div>
 
-      <InventoryTable rows={rows} catalog={catalog} initialQuery={searchParams.q ?? ""} />
+      <InventoryTable rows={rows} catalog={catalog} initialQuery={searchParams.q ?? ""} feeProfiles={feeProfiles} />
     </>
   );
 }
