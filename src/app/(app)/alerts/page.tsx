@@ -199,7 +199,17 @@ export default async function AlertsPage({ searchParams }: { searchParams: { pro
               </span>
               <div className="ft">
                 <b style={{ textTransform: "capitalize" }}>{p.status}</b> — {p.card.name} {p.side} at {formatMoney(p.proposedPrice)}
-                <div className="t">{formatRelativeTime(p.createdAt)}</div>
+                <div className="t">
+                  {formatRelativeTime(p.createdAt)}
+                  {(p.status === "approved" || p.status === "executed") && p.deepLink ? (
+                    <>
+                      {" · "}
+                      <a href={p.deepLink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>
+                        Open listing ↗
+                      </a>
+                    </>
+                  ) : null}
+                </div>
                 {p.outcomeNote ? <div className="hind">{p.outcomeNote}</div> : null}
               </div>
             </li>
