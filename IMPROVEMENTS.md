@@ -305,3 +305,25 @@ Fresh 4-critic sweep: 28 findings → 3 selected, 3 implemented, 3 approved,
    documented. Verified persistent across processes via DB header bytes.
 
 Tests: 254 → 262 passing.
+
+## Cycle 14 — 2026-07-08 ~10:17–10:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Inventory write-boundary bugs (cycle-13 critic finds)** —
+   updateInventoryItem could edit a sold row (stale tab rewrites history);
+   now conditionally claimed like every other mutation. sellInventoryItem
+   computed fees from a pre-claim quantity read; now claims then re-reads
+   inside a transaction (approveProposal's fresh-read pattern). +3 tests
+   incl. an interleaved quantity edit that fails against the old code.
+2. **Spread-proposal price edits use the right math** — editing a buy-side
+   spread proposal recomputed net with single-market buyEdge instead of
+   the sell leg recorded in the snapshot; now recomputes netPerCopy
+   against the sell leg (or errors clearly on malformed snapshots). +4
+   tests.
+3. **Alert rules are editable** — new updateRule server action (ownership
+   + validateRuleInput + conditional claim preserving lastFiredAt and
+   attribution) with an inline prefilled edit form in RuleRow on the
+   alerts page. +6 tests.
+
+Tests: 262 → 275 passing.

@@ -6,9 +6,7 @@ or when rejected. Last rebuilt from the cycle-10 critique sweep.
 
 ## Engine / correctness
 - addWatch: run target prices through normalizeTarget (NaN/Infinity/negative persist via crafted server-action calls; an Infinity buy target fires proposals every cooldown window) — real bug, S, good first pick
-- updateInventoryItem missing sold-row status guard (conditional updateMany on status in ['owned','listed']); sellInventoryItem soldFees computed from pre-claim quantity read — S bug (cycle 13 critic find)
 - Magic-link token consume race — atomic updateMany claim (token, usedAt: null, expiresAt > now) in src/lib/auth.ts — S bug
-- Spread-proposal price edit silently recomputes net with single-market math — detect spread legs in priceSnapshot inside editProposalPrice and recompute via the sell leg, or refuse edits on spread proposals — M bug
 - Kill switch & spend-cap visibility: app-wide banner + honest empty-state copy on dashboard/alerts when killSwitch on or cap exhausted — high UX, S (strong candidate)
 - Signin page 'Continue to the demo' silently loops when demo autologin disabled — gate the link — S
 - computeMarketStat returns null for cards with no tcgplayer/USD series — fall back to another marketplace's USD-normalized series
@@ -27,7 +25,7 @@ or when rejected. Last rebuilt from the cycle-10 critique sweep.
 - Saved views in inventory (FEATURES #3) — persist named filter+sort combos in localStorage; add price-band and trend filters
 
 ## UX / UI
-- Alert rules cannot be edited — updateRule server action (reuse validateRuleInput, preserve attribution) + prefilled RuleBuilder edit affordance — M, high value
+- Card-page RuleBuilder edit affordance for card-scoped rules (alerts-page rule editing shipped cycle 14)
 - Batch approvals ('Approve all N' via per-proposal conditional claims, partial results, batch undo) — M, FEATURES #6
 - Notification feed titles are dead text — wrap in <Link> to stored deepLink — S
 - formatCountdown unbounded mm:ss ('347:12') — render '5h 47m' above the hour, '2d 3h' above 24h — S
