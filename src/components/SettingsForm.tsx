@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { GAMES, MARKETPLACES, type FeeProfile, type GameSlug, type Marketplace } from "@/lib/constants";
 import { updateSettings } from "@/app/actions/settings";
+import { InlineStatus, useActionStatus } from "./ActionStatus";
 
 export interface SettingsFormData {
   quietHoursEnabled: boolean;
@@ -27,7 +28,7 @@ const toMin = (s: string) => {
 export function SettingsForm({ initial }: { initial: SettingsFormData }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [saved, setSaved] = useState(false);
+  const { status, flash } = useActionStatus();
   const [s, setS] = useState<SettingsFormData>(initial);
 
   const set = <K extends keyof SettingsFormData>(k: K, v: SettingsFormData[K]) => setS((prev) => ({ ...prev, [k]: v }));
@@ -36,10 +37,13 @@ export function SettingsForm({ initial }: { initial: SettingsFormData }) {
 
   const save = () =>
     startTransition(async () => {
-      await updateSettings(s);
-      setSaved(true);
-      router.refresh();
-      setTimeout(() => setSaved(false), 2000);
+      const res: { ok: boolean; error?: string } = await updateSettings(s);
+      if (res.ok) {
+        flash("ok", "✓ Saved");
+        router.refresh();
+      } else {
+        flash("error", res.error ?? "Save failed");
+      }
     });
 
   return (
@@ -159,8 +163,9 @@ export function SettingsForm({ initial }: { initial: SettingsFormData }) {
 
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <button className="btn pri" onClick={save} disabled={pending}>
-          {saved ? "✓ Saved" : "Save settings"}
+          Save settings
         </button>
+        <InlineStatus status={status} />
         <span className="hint">Changes apply to future fee/spread math immediately.</span>
       </div>
     </div>

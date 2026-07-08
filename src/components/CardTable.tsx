@@ -7,6 +7,7 @@ import { updateWatchTargets } from "@/app/actions/watchlist";
 import { GAMES, marketplaceById } from "@/lib/constants";
 import { formatMoney } from "@/lib/format";
 import type { CardRow, ColKey } from "@/lib/cardRow";
+import { InlineStatus, useActionStatus } from "./ActionStatus";
 import { CardArt } from "./CardArt";
 import { Delta } from "./Delta";
 import { GameChip } from "./GameChip";
@@ -271,6 +272,7 @@ function TargetCell({ row, field, label }: { row: CardRow; field: "targetBuyPric
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
+  const { status, flash, clear } = useActionStatus();
   const cancelRef = useRef(false);
   const value = field === "targetBuyPrice" ? row.targetBuyPrice : row.targetSellPrice;
 
@@ -282,42 +284,59 @@ function TargetCell({ row, field, label }: { row: CardRow; field: "targetBuyPric
     if (next === (value ?? null)) return; // unchanged
     const patch = field === "targetBuyPrice" ? { targetBuyPrice: next } : { targetSellPrice: next };
     startTransition(async () => {
-      await updateWatchTargets(row.cardId, patch);
-      router.refresh();
+      const res: { ok: boolean; error?: string } = await updateWatchTargets(row.cardId, patch);
+      if (res.ok) {
+        clear();
+        router.refresh();
+      } else {
+        flash("error", res.error ?? "Update failed");
+      }
     });
   };
 
-  if (!editing) {
-    return (
-      <button className="btn sm ghost" onClick={() => setEditing(true)} disabled={pending} aria-label={label}>
-        {value != null ? formatMoney(value) : "Set"}
-      </button>
-    );
-  }
   return (
-    <input
-      autoFocus
-      type="number"
-      min={0}
-      step="0.01"
-      defaultValue={value ?? ""}
-      aria-label={label}
-      style={{ width: 96 }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.currentTarget.blur(); // save via onBlur
-        } else if (e.key === "Escape") {
-          cancelRef.current = true;
-          setEditing(false);
-        }
-      }}
-      onBlur={(e) => {
-        if (cancelRef.current) {
-          cancelRef.current = false;
-          return;
-        }
-        save(e.currentTarget.value);
-      }}
-    />
+    <>
+      {editing ? (
+        <input
+          autoFocus
+          type="number"
+          min={0}
+          step="0.01"
+          defaultValue={value ?? ""}
+          aria-label={label}
+          style={{ width: 96 }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.currentTarget.blur(); // save via onBlur
+            } else if (e.key === "Escape") {
+              cancelRef.current = true;
+              setEditing(false);
+            }
+          }}
+          onBlur={(e) => {
+            if (cancelRef.current) {
+              cancelRef.current = false;
+              return;
+            }
+            save(e.currentTarget.value);
+          }}
+        />
+      ) : (
+        <button
+          className="btn sm ghost"
+          onClick={() => {
+            cancelRef.current = false; // a stale Escape must not swallow the next save
+            setEditing(true);
+          }}
+          disabled={pending}
+          aria-label={label}
+        >
+          {value != null ? formatMoney(value) : "Set"}
+        </button>
+      )}
+      <div style={{ whiteSpace: "normal" }}>
+        <InlineStatus status={status} />
+      </div>
+    </>
   );
 }
