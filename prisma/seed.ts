@@ -1,8 +1,10 @@
 // Seed: a fully-populated demo so `npm run dev` shows a working product with no
 // API keys. Creates the 5 games, ~200 cards with 90 days of random-walk price
-// history, cached MarketStats, and a demo user (Sam) with a 60-card inventory
-// across all games, a watchlist, 3 alert rules, 2 pending approvals, and a feed
-// of past notifications (approved / expired-with-hindsight / declined).
+// history (plus a few days of cross-market quotes so spreads survive as the
+// seed ages), cached MarketStats, and a demo user (Sam) with a 60-card
+// inventory across all games, a watchlist, 3 alert rules, 5 pending approvals
+// with staggered expiries, and a feed of past notifications
+// (approved / expired-with-hindsight / declined).
 //
 // Deterministic (seeded RNG) so re-running produces the same demo.
 
@@ -173,11 +175,23 @@ function buildPoints(def: CardDef): { rows: RawPoint[]; statPoints: StatPoint[] 
   rows.push({ marketplace: "tcgplayer", condition: "NM", priceType: "low", price: round2(last * 0.96), currency: "USD", listingCount: listings[DAYS - 1], capturedAt: lastAt });
   rows.push({ marketplace: "tcgplayer", condition: "LP", priceType: "market", price: round2(last * CONDITION_MULTIPLIER.LP), currency: "USD", listingCount: Math.round(listings[DAYS - 1] * 0.3), capturedAt: lastAt });
 
-  if (markets.includes("cardmarket")) {
-    rows.push({ marketplace: "cardmarket", condition: "NM", priceType: "market", price: round2((last * 0.94) / 1.08), currency: "EUR", listingCount: Math.round(listings[DAYS - 1] * 1.4), capturedAt: lastAt });
-  }
-  if (markets.includes("ebay")) {
-    rows.push({ marketplace: "ebay", condition: "NM", priceType: "sold", price: round2(last * 1.02), currency: "USD", listingCount: 20 + (Math.round(last) % 40), capturedAt: lastAt });
+  // Cross-market quotes get a short daily history (last 4 days), not just one
+  // row at lastAt: as the seed ages past SPREAD_FRESHNESS_MS, yesterday's
+  // points keep the spread scanner / card-page spreads alive. The freshest row
+  // keeps today's exact ratios so the cached MarketStats (and the mockup
+  // spread numbers) are unchanged.
+  const xmRng = seededRng("xm-" + def.name + def.setCode);
+  for (let i = DAYS - 4; i < DAYS; i++) {
+    const freshest = i === DAYS - 1;
+    const at = freshest ? lastAt : new Date(start + i * DAY_MS);
+    const cmNoise = freshest ? 1 : 1 + (xmRng() - 0.5) * 0.03; // ±1.5% per day
+    const ebNoise = freshest ? 1 : 1 + (xmRng() - 0.5) * 0.03;
+    if (markets.includes("cardmarket")) {
+      rows.push({ marketplace: "cardmarket", condition: "NM", priceType: "market", price: round2((series[i] * 0.94 * cmNoise) / 1.08), currency: "EUR", listingCount: Math.round(listings[i] * 1.4), capturedAt: at });
+    }
+    if (markets.includes("ebay")) {
+      rows.push({ marketplace: "ebay", condition: "NM", priceType: "sold", price: round2(series[i] * 1.02 * ebNoise), currency: "USD", listingCount: 20 + (Math.round(series[i]) % 40), capturedAt: at });
+    }
   }
 
   const statPoints: StatPoint[] = rows.map((r) => ({
@@ -229,6 +243,7 @@ async function main() {
   const catalog = buildCatalog();
   const cardIdByName = new Map<string, string>();
   const currentPriceByCard = new Map<string, number>();
+  const median90ByCard = new Map<string, number | null>();
   console.log(`   Creating ${catalog.length} cards with ${DAYS}d history…`);
 
   for (const def of catalog) {
@@ -252,7 +267,10 @@ async function main() {
     await prisma.pricePoint.createMany({ data: rows.map((r) => ({ ...r, cardId: card.id })) });
 
     const stat = computeMarketStat(statPoints, { now: NOW });
-    if (stat) await prisma.marketStat.create({ data: { cardId: card.id, ...stat } });
+    if (stat) {
+      await prisma.marketStat.create({ data: { cardId: card.id, ...stat } });
+      median90ByCard.set(card.id, stat.median90d);
+    }
   }
 
   // Demo user
@@ -497,8 +515,88 @@ async function main() {
     },
   });
 
-  // Notification feed for the two pending proposals.
-  for (const p of [propRagavan, propElsa]) {
+  // Three more staggered approvals (~2h / ~3.5h / ~6h) so the queue outlives
+  // the two short-fuse mockup proposals instead of emptying within ~25 minutes.
+  const sheoldredId = cid("Sheoldred, the Apocalypse");
+  const sheoldredPrice = price(sheoldredId);
+  const execSellSheoldred = resolveExecution({ marketplace: "tcgplayer", side: "sell", card: { name: "Sheoldred, the Apocalypse", setName: "Dominaria United", setCode: "DMU", gameSlug: "mtg" } });
+  const propSheoldred = await prisma.tradeProposal.create({
+    data: {
+      userId: user.id,
+      cardId: sheoldredId,
+      ruleId: ruleSpike.id,
+      side: "sell",
+      quantity: 1,
+      proposedPrice: sheoldredPrice,
+      marketplace: "tcgplayer",
+      deepLink: execSellSheoldred.url,
+      executionMode: execSellSheoldred.mode,
+      rationale: "Sell into spikes — up ▲ +15.6% in 24h on TCGplayer. Standard B&R chatter is the likely driver; you hold 2 in Binder A at $60.00 cost.",
+      priceSnapshot: toJson({ price: sheoldredPrice, delta24hPct: 15.6, delta7dPct: 4.2 }),
+      netAfterFees: netProceeds(sheoldredPrice, 1, tcgFee).net,
+      costBasis: 60,
+      status: "pending",
+      expiresAt: new Date(NOW.getTime() + 2 * 3600 * 1000),
+    },
+  });
+
+  const charizardSellId = cid("Charizard ex (SAR)");
+  const charizardSellPrice = price(charizardSellId);
+  const execSellCharizard = resolveExecution({ marketplace: "tcgplayer", side: "sell", card: { name: "Charizard ex (SAR)", setName: "Obsidian Flames", setCode: "OBF", gameSlug: "pokemon" } });
+  const propCharizard = await prisma.tradeProposal.create({
+    data: {
+      userId: user.id,
+      cardId: charizardSellId,
+      ruleId: ruleSpike.id,
+      side: "sell",
+      quantity: 1,
+      proposedPrice: charizardSellPrice,
+      marketplace: "tcgplayer",
+      deepLink: execSellCharizard.url,
+      executionMode: execSellCharizard.mode,
+      rationale: "Sell into spikes — up ▲ +16.9% in 24h on TCGplayer as Pokémon hype builds, closing on your $200.00 sell target. You hold 2 @ $150.00 cost.",
+      priceSnapshot: toJson({ price: charizardSellPrice, delta24hPct: 16.9, target: 200 }),
+      netAfterFees: netProceeds(charizardSellPrice, 1, tcgFee).net,
+      costBasis: 150,
+      status: "pending",
+      expiresAt: new Date(NOW.getTime() + 3.5 * 3600 * 1000),
+    },
+  });
+
+  const oneRingDef = catalog.find((d) => d.name === "The One Ring")!;
+  const oneRingId = cid("The One Ring");
+  const oneRingPrice = price(oneRingId);
+  const oneRingMedian = median90ByCard.get(oneRingId) ?? round2(oneRingPrice * 1.1);
+  const execBuyOneRing = resolveExecution({ marketplace: "tcgplayer", side: "buy", card: { name: oneRingDef.name, setName: oneRingDef.setName, setCode: oneRingDef.setCode, gameSlug: oneRingDef.gameSlug } });
+  const propOneRing = await prisma.tradeProposal.create({
+    data: {
+      userId: user.id,
+      cardId: oneRingId,
+      ruleId: ruleDip.id,
+      side: "buy",
+      quantity: 1,
+      proposedPrice: oneRingPrice,
+      marketplace: "tcgplayer",
+      deepLink: execBuyOneRing.url,
+      executionMode: execBuyOneRing.mode,
+      rationale: `Dip buyer — down ▼ −12.4% in 48h, well under your $40.00 watch target. 90-day median $${oneRingMedian.toFixed(2)} leaves resell room after fees.`,
+      priceSnapshot: toJson({ price: oneRingPrice, delta48hPct: -12.4, target: 40, median90d: oneRingMedian }),
+      netAfterFees: buyEdge(oneRingPrice, 1, oneRingMedian, "tcgplayer").net,
+      costBasis: null,
+      status: "pending",
+      expiresAt: new Date(NOW.getTime() + 6 * 3600 * 1000),
+    },
+  });
+
+  // Notification feed for the pending proposals.
+  const pendingFeed = [
+    { p: propRagavan, label: "Ragavan", sentMinAgo: 20 },
+    { p: propElsa, label: "Elsa — Spirit of Winter", sentMinAgo: 20 },
+    { p: propSheoldred, label: "Sheoldred, the Apocalypse", sentMinAgo: 12 },
+    { p: propCharizard, label: "Charizard ex (SAR)", sentMinAgo: 8 },
+    { p: propOneRing, label: "The One Ring", sentMinAgo: 4 },
+  ];
+  for (const { p, label, sentMinAgo } of pendingFeed) {
     await prisma.notificationLog.create({
       data: {
         userId: user.id,
@@ -506,11 +604,11 @@ async function main() {
         ruleId: p.ruleId,
         kind: "proposal",
         channel: "console",
-        title: `${p.side === "sell" ? "Sell" : "Buy"} proposal — ${p.side === "sell" ? "Ragavan" : "Elsa — Spirit of Winter"}`,
+        title: `${p.side === "sell" ? "Sell" : "Buy"} proposal — ${label}`,
         body: `Propose ${p.side.toUpperCase()} ${p.quantity} @ $${p.proposedPrice.toFixed(2)}`,
         deepLink: `/alerts?proposal=${p.id}`,
-        sentAt: new Date(NOW.getTime() - 20 * 60 * 1000),
-        deliveredAt: new Date(NOW.getTime() - 20 * 60 * 1000),
+        sentAt: new Date(NOW.getTime() - sentMinAgo * 60 * 1000),
+        deliveredAt: new Date(NOW.getTime() - sentMinAgo * 60 * 1000),
       },
     });
   }
