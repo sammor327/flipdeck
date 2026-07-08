@@ -69,7 +69,11 @@ export function summarize(holdings: HoldingInput[]): PortfolioSummary {
 
   for (const h of holdings) {
     if (h.status === "sold") {
-      const proceeds = (h.soldPrice ?? 0) * h.quantity - (h.soldFees ?? 0);
+      // Legacy sales with no recorded price contribute nothing — matching
+      // realizedPLFor()'s null (em-dash in the table) instead of booking a
+      // fabricated total loss.
+      if (h.soldPrice == null) continue;
+      const proceeds = h.soldPrice * h.quantity - (h.soldFees ?? 0);
       realizedPL += proceeds - h.costBasis * h.quantity;
       continue;
     }
