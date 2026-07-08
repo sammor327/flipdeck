@@ -54,7 +54,7 @@ export function SettingsForm({ initial }: { initial: SettingsFormData }) {
           <input type="checkbox" checked={s.pushEnabled} onChange={(e) => set("pushEnabled", e.target.checked)} /> Browser push notifications
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <input type="checkbox" checked={s.emailEnabled} onChange={(e) => set("emailEnabled", e.target.checked)} /> Email notifications
+          <input type="checkbox" checked={s.emailEnabled} onChange={(e) => set("emailEnabled", e.target.checked)} disabled /> Email notifications (coming soon)
         </label>
         <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
           <input type="checkbox" checked={s.digestMode} onChange={(e) => set("digestMode", e.target.checked)} /> Digest mode (one morning summary instead of a stream)
