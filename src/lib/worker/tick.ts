@@ -7,6 +7,8 @@
 //   5. evaluates watchlist target prices (buy/sell targets fire the same way)
 //   6. expires stale pending proposals and records hindsight
 //   7. records hindsight for declined proposals whose horizon has passed
+//   8. flushes notifications held by quiet hours / the kill switch (digest
+//      mode collapses 2+ held rows into one morning summary)
 //
 // Everything the tick decides is delegated to the pure modules (stats, evaluate,
 // fees, expiry) so this file is orchestration + I/O only.
@@ -23,6 +25,8 @@ import { fromJson, toJson } from "../json";
 import { HOUR_MS, minOver, moveOverWindow, round2, type PricePointLite } from "../math";
 import { resolveExecution } from "../execution";
 import { dispatchNotification } from "../notifications/dispatch";
+import { flushHeldNotifications } from "../notifications/flush";
+import { quietHoursEnd } from "../notifications/quietHours";
 import { providerFor, type ProviderQuote } from "../providers";
 import { userBestSpreads, type UserSpread } from "../spreads";
 import { computeMarketStat, SPREAD_FRESHNESS_MS, type StatPoint } from "../stats";
@@ -135,6 +139,7 @@ export interface TickResult {
   rulesEvaluated: number;
   expired: number;
   hindsights: number;
+  flushed: number;
 }
 
 // Single-flight guard. runTick is reachable from three entry points — the
@@ -191,6 +196,16 @@ async function runTickBody(opts: { fastLaneOnly?: boolean } = {}): Promise<TickR
   // 7. Record hindsight for declined proposals past their horizon.
   const hindsights = await recordDeclinedHindsight(now);
 
+  // 8. Flush notifications held by quiet hours / the kill switch. Isolated:
+  // a flush failure must never fail the tick.
+  let flushed = 0;
+  try {
+    flushed = await flushHeldNotifications(now);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[worker] held-notification flush failed:", err);
+  }
+
   return {
     cards: cards.length,
     quotesInserted,
@@ -198,6 +213,7 @@ async function runTickBody(opts: { fastLaneOnly?: boolean } = {}): Promise<TickR
     rulesEvaluated: evaluated.rulesEvaluated,
     expired,
     hindsights,
+    flushed,
   };
 }
 
@@ -413,6 +429,11 @@ export async function evaluateWatchTargets(now = new Date()): Promise<number> {
         card: { name: item.card.name, setName: item.card.setName, setCode: item.card.setCode, gameSlug: item.card.game.slug as GameSlug },
       });
 
+      // Watch-target pushes always respect quiet hours (allowInQuietHours:
+      // false below), so an overnight fire keeps the proposal pending until
+      // 30 min after the window ends instead of expiring undelivered.
+      const expiresAt = proposalExpiry(settings, true, WATCH_TARGET_EXPIRY_MINUTES, now);
+
       const proposal = await prisma.tradeProposal.create({
         data: {
           userId: item.userId,
@@ -438,14 +459,14 @@ export async function evaluateWatchTargets(now = new Date()): Promise<number> {
           netAfterFees,
           costBasis,
           status: "pending",
-          expiresAt: new Date(now.getTime() + WATCH_TARGET_EXPIRY_MINUTES * 60000),
+          expiresAt,
         },
       });
       proposalsCreated++;
 
       const delta = stat.delta24hPct ?? 0;
       const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${item.card.name} ${formatDelta(delta, "percent")}`;
-      const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${WATCH_TARGET_EXPIRY_MINUTES} min`;
+      const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${expiresInMinutes(expiresAt, now)} min`;
       await dispatchNotification({
         userId: item.userId,
         title,
@@ -461,6 +482,39 @@ export async function evaluateWatchTargets(now = new Date()): Promise<number> {
     }
   }
   return proposalsCreated;
+}
+
+// Grace period past the end of quiet hours, so a proposal whose push was held
+// overnight is still pending when the morning flush delivers it.
+const QUIET_HOURS_EXPIRY_GRACE_MS = 30 * 60000;
+
+/**
+ * Proposal expiry, extended when the owner's quiet hours will hold the push:
+ * a ~30-minute proposal created at 23:00 against a 22:00 → 07:00 window would
+ * otherwise die silently hours before its notification can be delivered.
+ * `pushHeld` is whether this proposal's push respects quiet hours (rules:
+ * quietHoursRespected; watch targets: always). Outside quiet hours — or when
+ * the push breaks through — the configured expiry stands unchanged.
+ */
+function proposalExpiry(
+  settings: { quietHoursEnabled: boolean; quietHoursStart: number; quietHoursEnd: number } | null,
+  pushHeld: boolean,
+  expiryMinutes: number,
+  now: Date
+): Date {
+  const normal = new Date(now.getTime() + expiryMinutes * 60000);
+  if (!pushHeld || !settings) return normal;
+  const quietEnd = quietHoursEnd(
+    { enabled: settings.quietHoursEnabled, start: settings.quietHoursStart, end: settings.quietHoursEnd },
+    now
+  );
+  if (!quietEnd) return normal; // not currently inside the window
+  return new Date(Math.max(normal.getTime(), quietEnd.getTime() + QUIET_HOURS_EXPIRY_GRACE_MS));
+}
+
+/** Minutes until `expiresAt`, for the "expires in N min" notification body. */
+function expiresInMinutes(expiresAt: Date, now: Date): number {
+  return Math.round((expiresAt.getTime() - now.getTime()) / 60000);
 }
 
 /**
@@ -545,7 +599,9 @@ async function createProposal(
     card: { name: card.name, setName: card.setName, setCode: card.setCode, gameSlug: card.game.slug as GameSlug },
   });
 
-  const expiresAt = new Date(now.getTime() + rule.proposalExpiryMinutes * 60000);
+  // Quiet-hours-held pushes get an actionable expiry: pending until 30 min
+  // after the window ends, so the morning flush lands on a live proposal.
+  const expiresAt = proposalExpiry(settings, rule.quietHoursRespected, rule.proposalExpiryMinutes, now);
 
   const proposal = await prisma.tradeProposal.create({
     data: {
@@ -577,7 +633,7 @@ async function createProposal(
 
   const delta = stat.delta24hPct ?? 0;
   const title = `${side === "sell" ? "Sell" : "Buy"} signal — ${card.name} ${formatDelta(delta, "percent")}`;
-  const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${rule.proposalExpiryMinutes} min`;
+  const body = `Propose ${side.toUpperCase()} ${quantity} @ ${formatMoney(price)} · net after fees ${formatSignedMoney(netAfterFees)} · expires in ${expiresInMinutes(expiresAt, now)} min`;
   await dispatchNotification({
     userId: rule.userId,
     title,

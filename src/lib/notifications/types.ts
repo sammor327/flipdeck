@@ -1,6 +1,6 @@
 import type { NotificationChannel } from "../constants";
 
-export type NotificationKind = "proposal" | "info" | "expiry" | "hindsight";
+export type NotificationKind = "proposal" | "info" | "expiry" | "hindsight" | "digest";
 
 export interface NotifyInput {
   userId: string;

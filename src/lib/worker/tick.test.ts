@@ -99,6 +99,7 @@ vi.mock("../db", () => ({
     userSettings: { findUnique: async () => db.settings },
     watchlistItem: { findMany: async () => [] },
     inventoryItem: { findMany: async () => [] },
+    notificationLog: { findMany: async () => [] }, // held-notification flush: nothing held
   },
 }));
 
@@ -456,7 +457,7 @@ describe("runTick", () => {
     errSpy.mockRestore();
 
     // Card B ingested despite card A throwing, and every downstream sweep
-    // (rules, watch targets, expiry, hindsight) still ran to completion.
+    // (rules, watch targets, expiry, hindsight, flush) still ran to completion.
     expect(res).toEqual({
       cards: 2,
       quotesInserted: 1,
@@ -464,6 +465,7 @@ describe("runTick", () => {
       rulesEvaluated: 0,
       expired: 0,
       hindsights: 0,
+      flushed: 0,
     });
   });
 
