@@ -11,6 +11,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { buyEdge, netProceeds } from "@/lib/fees";
 import { mergeFeeProfiles } from "@/lib/feeProfiles";
+import { checkProposalGuardrails } from "@/lib/guardrails";
 import { fromJson, toJson } from "@/lib/json";
 import { round2 } from "@/lib/math";
 
@@ -175,8 +176,13 @@ export async function approveProposal(id: string): Promise<ProposalActionResult>
       data: { status: "approved", decidedAt: now, executedAt: now, undoUntil },
     });
     if (claim.count !== 1) return false;
-    const effect = await applyInventoryEffect(tx, ctx.user.id, ctx.p, now);
-    const snapshot = fromJson<Record<string, unknown>>(ctx.p.priceSnapshot, {});
+    // Re-read the row we just claimed: an editProposalPrice that committed
+    // between owned() above and the claim changed proposedPrice/netAfterFees,
+    // and the inventory effects + undo record must be computed from what the
+    // row actually says. Cannot be null — the claim matched it in this tx.
+    const fresh = (await tx.tradeProposal.findUnique({ where: { id } }))!;
+    const effect = await applyInventoryEffect(tx, ctx.user.id, fresh, now);
+    const snapshot = fromJson<Record<string, unknown>>(fresh.priceSnapshot, {});
     await tx.tradeProposal.update({
       where: { id },
       data: { priceSnapshot: toJson({ ...snapshot, _inventoryEffect: effect }) },
@@ -225,6 +231,19 @@ export async function declineProposal(id: string): Promise<ProposalActionResult>
   return { ok: true, undoUntil: undoUntil.getTime() };
 }
 
+/** Spend already committed today by OTHER proposals: pending + approved buys
+ * created since server-local midnight, excluding the proposal being edited —
+ * its old committed value is the one the edit replaces. Mirrors the worker's
+ * private buysCommittedTodayFor (lib/worker/tick.ts) minus the exclusion. */
+async function buysCommittedTodayExcluding(userId: string, excludeId: string, now: Date): Promise<number> {
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todaysBuys = await prisma.tradeProposal.findMany({
+    where: { userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday }, id: { not: excludeId } },
+    select: { proposedPrice: true, quantity: true },
+  });
+  return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
+}
+
 /** Edit a pending proposal's price → recompute the after-fee net exactly the
  * way the worker did when it created the proposal (see createProposal in
  * lib/worker/tick.ts). The priceSnapshot is deliberately left untouched: it
@@ -244,6 +263,14 @@ export async function editProposalPrice(id: string, newPrice: number): Promise<P
   if (ctx.p.expiresAt.getTime() <= now.getTime()) return { ok: false, error: "Already expired" };
 
   const settings = await prisma.userSettings.findUnique({ where: { userId: ctx.user.id } });
+  // An edit must clear the same guardrails the worker enforced at creation:
+  // the kill switch pauses everything, and the daily spend cap blocks a BUY
+  // whose new value plus today's other committed buys would exceed it (the
+  // proposal's own old value is excluded — the edit replaces it).
+  const buysCommittedToday =
+    (ctx.p.side as Side) === "buy" ? await buysCommittedTodayExcluding(ctx.user.id, id, now) : 0;
+  const guard = checkProposalGuardrails(settings, ctx.p.side as Side, price * ctx.p.quantity, buysCommittedToday);
+  if (guard.blocked) return { ok: false, error: guard.reason };
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
   const marketplace = ctx.p.marketplace as Marketplace;
   const fee = profiles[marketplace];

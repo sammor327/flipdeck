@@ -24,7 +24,9 @@ const { db, prismaFake, resetDb } = vi.hoisted(() => {
   function matchValue(rowVal: any, cond: any): boolean {
     if (cond !== null && typeof cond === "object" && !(cond instanceof Date)) {
       if ("gt" in cond) return rowVal != null && rowVal > cond.gt;
+      if ("gte" in cond) return rowVal != null && rowVal >= cond.gte;
       if ("in" in cond) return (cond.in as any[]).includes(rowVal);
+      if ("not" in cond) return !matchValue(rowVal, cond.not);
       throw new Error(`prismaFake: unsupported filter ${JSON.stringify(cond)}`);
     }
     const a = rowVal instanceof Date ? rowVal.getTime() : rowVal;
@@ -48,6 +50,7 @@ const { db, prismaFake, resetDb } = vi.hoisted(() => {
   function table(rows: Row[], idPrefix: string) {
     return {
       findFirst: async ({ where }: any) => rows.find((r) => whereMatch(r, where)) ?? null,
+      findUnique: async ({ where }: any) => rows.find((r) => whereMatch(r, where)) ?? null,
       findMany: async ({ where }: any) => rows.filter((r) => whereMatch(r, where)),
       create: async ({ data }: any) => {
         const row = { id: nextId(idPrefix), ...data };
@@ -143,6 +146,7 @@ function seedProposal(overrides: Row = {}): Row {
     priceSnapshot: JSON.stringify({ price: 10 }),
     deepLink: "https://example.test/listing",
     executionMode: "deeplink",
+    createdAt: new Date(now),
     expiresAt: new Date(now + 60_000),
     decidedAt: null,
     executedAt: null,
@@ -374,5 +378,129 @@ describe("editProposalPrice", () => {
     }
     expect(db.tradeProposals[0].proposedPrice).toBe(10);
     expect(db.tradeProposals[0].netAfterFees).toBe(8.5);
+  });
+});
+
+describe("editProposalPrice guardrails", () => {
+  function seedSettings(overrides: Row = {}): Row {
+    const row: Row = { id: "us-1", userId: "u1", killSwitch: false, dailySpendCap: 0, feeProfiles: "{}", ...overrides };
+    db.userSettings.push(row);
+    return row;
+  }
+
+  it("rejects a buy edit that would blow the daily spend cap given other buys committed today", async () => {
+    seedSettings({ dailySpendCap: 500 });
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 50, netAfterFees: 8.5 });
+    seedProposal({ id: "tp-2", side: "buy", quantity: 2, proposedPrice: 150, status: "approved" }); // $300 committed
+
+    const res = await editProposalPrice("tp-1", 250); // 300 + 250 > 500
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("daily spend cap");
+    const row = db.tradeProposals.find((r) => r.id === "tp-1")!;
+    expect(row.proposedPrice).toBe(50); // row unchanged
+    expect(row.netAfterFees).toBe(8.5);
+    expect(row.status).toBe("pending");
+  });
+
+  it("allows a buy edit within the cap and recomputes netAfterFees", async () => {
+    seedSettings({ dailySpendCap: 500 });
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 50 });
+    seedProposal({ id: "tp-2", side: "buy", quantity: 2, proposedPrice: 150, status: "approved" }); // $300 committed
+
+    const res = await editProposalPrice("tp-1", 150); // 300 + 150 <= 500
+    expect(res).toEqual({ ok: true });
+    const row = db.tradeProposals.find((r) => r.id === "tp-1")!;
+    expect(row.proposedPrice).toBe(150);
+    // No marketStat and no snapshot median → the median falls back to the new price.
+    expect(row.netAfterFees).toBe(buyEdge(150, 1, 150, "tcgplayer", DEFAULT_FEE_PROFILES).net);
+  });
+
+  it("rejects edits while the kill switch is on, buys and sells alike", async () => {
+    seedSettings({ killSwitch: true });
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 10, netAfterFees: 8.5 });
+    seedProposal({ id: "tp-2", side: "sell", quantity: 1, proposedPrice: 10, netAfterFees: 8.5 });
+
+    const buy = await editProposalPrice("tp-1", 11);
+    expect(buy.ok).toBe(false);
+    expect(buy.error).toContain("kill switch");
+    const sell = await editProposalPrice("tp-2", 11);
+    expect(sell.ok).toBe(false);
+    expect(sell.error).toContain("kill switch");
+    for (const row of db.tradeProposals) {
+      expect(row.proposedPrice).toBe(10);
+      expect(row.netAfterFees).toBe(8.5);
+    }
+  });
+
+  it("excludes the edited proposal's own committed value from today's sum", async () => {
+    seedSettings({ dailySpendCap: 500 });
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 400 }); // the only buy today
+    const res = await editProposalPrice("tp-1", 450); // would block if its own $400 still counted
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(450);
+  });
+
+  it("leaves sell edits cap-exempt even when today's buys already exceed the cap", async () => {
+    seedSettings({ dailySpendCap: 100 });
+    seedProposal({ side: "sell", quantity: 2, proposedPrice: 10, netAfterFees: 17 });
+    seedProposal({ id: "tp-2", side: "buy", quantity: 1, proposedPrice: 500, status: "approved" });
+
+    const res = await editProposalPrice("tp-1", 12.5);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(12.5);
+  });
+
+  it("never blocks edits for a user with no settings row", async () => {
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 50 });
+    seedProposal({ id: "tp-2", side: "buy", quantity: 1, proposedPrice: 100_000, status: "approved" });
+    const res = await editProposalPrice("tp-1", 99_999);
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(99_999);
+  });
+
+  it("does not count buys from before today's server-local midnight", async () => {
+    seedSettings({ dailySpendCap: 500 });
+    seedProposal({ side: "buy", quantity: 1, proposedPrice: 50 });
+    seedProposal({
+      id: "tp-2",
+      side: "buy",
+      quantity: 1,
+      proposedPrice: 400,
+      status: "approved",
+      createdAt: new Date(Date.now() - 2 * 86_400_000),
+    });
+    const res = await editProposalPrice("tp-1", 450); // the stale $400 is ignored
+    expect(res).toEqual({ ok: true });
+    expect(db.tradeProposals[0].proposedPrice).toBe(450);
+  });
+});
+
+describe("approveProposal fresh-read", () => {
+  it("records soldPrice from an edit that lands between approve's read and its claim", async () => {
+    seedProposal({ side: "sell", quantity: 1, proposedPrice: 10, netAfterFees: 8.5 });
+    seedHolding({ quantity: 1 });
+
+    // Simulate the interleaving: an editProposalPrice commits after approve's
+    // owned() read but before its transaction claims the row.
+    const originalTx = prismaFake.$transaction;
+    prismaFake.$transaction = async (fn: (tx: any) => Promise<any>) => {
+      const row = db.tradeProposals.find((r) => r.id === "tp-1")!;
+      row.proposedPrice = 12.5;
+      row.netAfterFees = netProceeds(12.5, 1, DEFAULT_FEE_PROFILES.tcgplayer).net;
+      prismaFake.$transaction = originalTx;
+      return originalTx(fn);
+    };
+    try {
+      const res = await approveProposal("tp-1");
+      expect(res.ok).toBe(true);
+    } finally {
+      prismaFake.$transaction = originalTx;
+    }
+
+    const sold = db.inventoryItems.filter((r) => r.status === "sold");
+    expect(sold).toHaveLength(1);
+    expect(sold[0].soldPrice).toBe(12.5); // the edited price, not the stale read
+    // The undo record was also built from the fresh in-transaction row.
+    expect(JSON.parse(db.tradeProposals[0].priceSnapshot)._inventoryEffect.kind).toBe("sell");
   });
 });
