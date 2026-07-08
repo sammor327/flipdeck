@@ -39,8 +39,12 @@ export default async function DashboardPage() {
     getTopMovers(user.id, 6),
   ]);
 
+  // Past-expiry pending rows drop out of Approvals immediately; the worker
+  // sweep (not this read-only page) flips them to expired with hindsight.
+  // Matching this filter to getDashboardStats keeps the panel, the "View all"
+  // count, and the "Pending approvals" tile in agreement.
   const pending = await prisma.tradeProposal.findMany({
-    where: { userId: user.id, status: "pending" },
+    where: { userId: user.id, status: "pending", expiresAt: { gt: new Date() } },
     include: { card: { include: { game: true } } },
     orderBy: { expiresAt: "asc" },
   });
