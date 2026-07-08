@@ -14,7 +14,7 @@
 // fees, expiry) so this file is orchestration + I/O only.
 
 import { prisma } from "../db";
-import { marketplaceById } from "../constants";
+import { marketplaceById, MARKETPLACES } from "../constants";
 import type { Condition, GameSlug, Marketplace, ProposeSide, RuleTrigger, Side } from "../constants";
 import { evaluateRule } from "../alerts/evaluate";
 import type { EvalContext, RuleParams } from "../alerts/types";
@@ -29,6 +29,7 @@ import { dispatchNotification } from "../notifications/dispatch";
 import { flushHeldNotifications } from "../notifications/flush";
 import { quietHoursEnd } from "../notifications/quietHours";
 import { providerFor, type ProviderQuote } from "../providers";
+import { buysCommittedToday } from "../spend";
 import { userBestSpreads, type UserSpread } from "../spreads";
 import { computeMarketStat, SPREAD_FRESHNESS_MS, type StatPoint } from "../stats";
 import { evaluateWatchTarget } from "../watchTargets";
@@ -413,15 +414,17 @@ export async function evaluateWatchTargets(now = new Date()): Promise<number> {
         costBasis = owned > 0 ? round2(totalCost / owned) : null;
       }
 
-      const buysCommittedToday = side === "buy" ? await buysCommittedTodayFor(item.userId, now) : 0;
-      const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);
+      const committedToday = side === "buy" ? await buysCommittedToday(item.userId, now) : 0;
+      const guard = checkProposalGuardrails(settings, side, price * quantity, committedToday);
       if (guard.blocked) {
         // eslint-disable-next-line no-console
         console.log(`[worker] guardrail skipped ${side} proposal (watch target, ${item.card.name}): ${guard.reason}`);
         continue;
       }
 
-      const marketplace: Marketplace = "tcgplayer";
+      // The owner's per-game default marketplace (Settings) — fees and the
+      // deep link below follow it automatically.
+      const marketplace = resolveDefaultMarketplace(settings, item.card.game.slug);
       const profiles = mergeFeeProfiles(settings?.feeProfiles);
       const fee = profiles[marketplace];
       const netAfterFees =
@@ -529,17 +532,19 @@ function marketplaceName(id: Marketplace): string {
 }
 
 /**
- * Spend already committed today: pending + approved buys created since
- * server-local midnight (the cap is a per-calendar-day limit in the server's
- * timezone). Shared by rule-fired and watch-target-fired proposals.
+ * The owner's default marketplace for a game (Settings → defaultMarketplaces,
+ * a GameSlug → Marketplace JSON map). The write boundary already sanitizes the
+ * map (sanitizeDefaultMarketplaces in actions/settings.ts), but the value is
+ * whitelisted against MARKETPLACES again here — defense in depth, since an
+ * unknown id would poison fee lookups and deep links. No settings row, missing
+ * key, malformed JSON, or an unknown value all fall back to tcgplayer.
  */
-async function buysCommittedTodayFor(userId: string, now: Date): Promise<number> {
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todaysBuys = await prisma.tradeProposal.findMany({
-    where: { userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday } },
-    select: { proposedPrice: true, quantity: true },
-  });
-  return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
+function resolveDefaultMarketplace(settings: { defaultMarketplaces: string } | null, gameSlug: string): Marketplace {
+  const map = fromJson<Record<string, unknown>>(settings?.defaultMarketplaces, {});
+  const candidate = map[gameSlug];
+  return typeof candidate === "string" && MARKETPLACES.some((m) => m.id === candidate)
+    ? (candidate as Marketplace)
+    : "tcgplayer";
 }
 
 /**
@@ -574,13 +579,13 @@ async function createProposal(
   // arbitrage IS the proposal, and it only exists at its own two venues.
   // Prices are already USD-normalized (userBestSpreads → computeSpread), and
   // are resolved BEFORE the guardrail check below so the daily spend cap sees
-  // the real buy cost. Fallback when `spread` is undefined (shouldn't happen —
-  // a spread fire's bestSpreadPct came from the same map): old behavior.
+  // the real buy cost. Non-spread fires: an explicitly-set rule.marketplace,
+  // else the owner's per-game default (Settings), else tcgplayer.
   const marketplace: Marketplace = spread
     ? side === "buy"
       ? spread.buyMarketplace
       : spread.sellMarketplace
-    : (rule.marketplace as Marketplace) || "tcgplayer";
+    : (rule.marketplace as Marketplace) || resolveDefaultMarketplace(settings, card.game.slug);
   const price = spread ? round2(side === "buy" ? spread.buyPrice : spread.sellPrice) : round2(stat.currentPrice);
 
   // Quantity: never propose selling more than the user holds.
@@ -597,11 +602,11 @@ async function createProposal(
     costBasis = owned > 0 ? round2(totalCost / owned) : null;
   }
 
-  const buysCommittedToday = side === "buy" ? await buysCommittedTodayFor(rule.userId, now) : 0;
+  const committedToday = side === "buy" ? await buysCommittedToday(rule.userId, now) : 0;
 
   // Blocked fires create nothing and do NOT start the rule's cooldown (they
   // return before the claim below ever touches lastFiredAt).
-  const guard = checkProposalGuardrails(settings, side, price * quantity, buysCommittedToday);
+  const guard = checkProposalGuardrails(settings, side, price * quantity, committedToday);
   if (guard.blocked) {
     // eslint-disable-next-line no-console
     console.log(`[worker] guardrail skipped ${side} proposal (rule "${rule.name}", ${card.name}): ${guard.reason}`);

@@ -14,6 +14,7 @@ import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { checkProposalGuardrails } from "@/lib/guardrails";
 import { fromJson, toJson } from "@/lib/json";
 import { round2 } from "@/lib/math";
+import { buysCommittedToday } from "@/lib/spend";
 
 export interface ProposalActionResult {
   ok: boolean;
@@ -231,19 +232,6 @@ export async function declineProposal(id: string): Promise<ProposalActionResult>
   return { ok: true, undoUntil: undoUntil.getTime() };
 }
 
-/** Spend already committed today by OTHER proposals: pending + approved buys
- * created since server-local midnight, excluding the proposal being edited —
- * its old committed value is the one the edit replaces. Mirrors the worker's
- * private buysCommittedTodayFor (lib/worker/tick.ts) minus the exclusion. */
-async function buysCommittedTodayExcluding(userId: string, excludeId: string, now: Date): Promise<number> {
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todaysBuys = await prisma.tradeProposal.findMany({
-    where: { userId, side: "buy", status: { in: ["pending", "approved"] }, createdAt: { gte: startOfToday }, id: { not: excludeId } },
-    select: { proposedPrice: true, quantity: true },
-  });
-  return todaysBuys.reduce((s, p) => s + p.proposedPrice * p.quantity, 0);
-}
-
 /** Edit a pending proposal's price → recompute the after-fee net exactly the
  * way the worker did when it created the proposal (see createProposal in
  * lib/worker/tick.ts). The priceSnapshot is deliberately left untouched: it
@@ -267,9 +255,9 @@ export async function editProposalPrice(id: string, newPrice: number): Promise<P
   // the kill switch pauses everything, and the daily spend cap blocks a BUY
   // whose new value plus today's other committed buys would exceed it (the
   // proposal's own old value is excluded — the edit replaces it).
-  const buysCommittedToday =
-    (ctx.p.side as Side) === "buy" ? await buysCommittedTodayExcluding(ctx.user.id, id, now) : 0;
-  const guard = checkProposalGuardrails(settings, ctx.p.side as Side, price * ctx.p.quantity, buysCommittedToday);
+  const committedToday =
+    (ctx.p.side as Side) === "buy" ? await buysCommittedToday(ctx.user.id, now, { excludeProposalId: id }) : 0;
+  const guard = checkProposalGuardrails(settings, ctx.p.side as Side, price * ctx.p.quantity, committedToday);
   if (guard.blocked) return { ok: false, error: guard.reason };
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
   const marketplace = ctx.p.marketplace as Marketplace;

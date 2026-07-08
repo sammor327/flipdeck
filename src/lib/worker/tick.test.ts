@@ -15,6 +15,10 @@
 // the snapshot) while non-spread fires keep the rule marketplace at
 // currentPrice.
 //
+// Watch-target fires (cycle 12): the proposal marketplace honors the owner's
+// per-game default (UserSettings.defaultMarketplaces), fees and deep link
+// following it, with tcgplayer as the fallback.
+//
 // runTick: single-flight (concurrent calls coalesce onto one tick) and
 // per-card error isolation (one bad card cannot abort the tick).
 
@@ -37,6 +41,7 @@ const { state, db, providers } = vi.hoisted(() => ({
     series: [] as Row[], // primarySeries pricePoints (tcgplayer NM market)
     spreadPoints: [] as Row[], // fresh NM quotes served to the spread batch query
     holdings: [] as Row[], // InventoryItems (sell-side holdings gate)
+    watchItems: [] as Row[], // WatchlistItems (card + game + marketStat included)
     cardLoads: 0,
     failNextCardLoad: false,
     proposalSeq: 0,
@@ -108,7 +113,7 @@ vi.mock("../db", () => ({
       upsert: async () => ({}),
     },
     userSettings: { findUnique: async () => db.settings },
-    watchlistItem: { findMany: async () => [] },
+    watchlistItem: { findMany: async () => db.watchItems },
     inventoryItem: { findMany: async () => db.holdings },
     notificationLog: { findMany: async () => [] }, // held-notification flush: nothing held
   },
@@ -150,7 +155,7 @@ function whereMatches(row: Row, where: Record<string, any>): boolean {
 vi.mock("../notifications/dispatch", () => ({ dispatchNotification: vi.fn(async () => undefined) }));
 
 import { dispatchNotification } from "../notifications/dispatch";
-import { evaluateAllRules, expireStaleProposals, recordDeclinedHindsight, runTick } from "./tick";
+import { evaluateAllRules, evaluateWatchTargets, expireStaleProposals, recordDeclinedHindsight, runTick } from "./tick";
 
 function row(id: string, status: string): Row {
   return {
@@ -177,6 +182,7 @@ beforeEach(() => {
   db.series = [];
   db.spreadPoints = [];
   db.holdings = [];
+  db.watchItems = [];
   db.cardLoads = 0;
   db.failNextCardLoad = false;
   providers.fetchQuotes = async () => [];
@@ -557,6 +563,82 @@ describe("evaluateAllRules spread-rule proposals", () => {
     expect(snap.buyMarketplace).toBeUndefined();
     expect(snap.sellMarketplace).toBeUndefined();
     expect(snap.netPerCopy).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateWatchTargets: the owner's default marketplace (cycle 12).
+// ---------------------------------------------------------------------------
+
+/** A watch item whose buy target always fires (currentPrice 10 ≤ target 15). */
+function watchItem(cardId: string): Row {
+  return {
+    id: `w-${cardId}`,
+    userId: "u1",
+    cardId,
+    targetBuyPrice: 15,
+    targetSellPrice: null,
+    card: {
+      id: cardId,
+      name: `Card ${cardId}`,
+      setCode: "SET",
+      setName: "Test Set",
+      game: { slug: "mtg" },
+      marketStat: { currentPrice: 10, median90d: 12, delta24hPct: 0, delta7dPct: 0, bestSpreadPct: null, low90d: 10 },
+    },
+  };
+}
+
+/** A settings row with the guardrails open and quiet hours off. */
+function settingsWithDefaults(defaultMarketplaces: string): Row {
+  return {
+    userId: "u1",
+    killSwitch: false,
+    dailySpendCap: 0,
+    feeProfiles: null,
+    defaultMarketplaces,
+    quietHoursEnabled: false,
+    quietHoursStart: 1320,
+    quietHoursEnd: 420,
+  };
+}
+
+describe("evaluateWatchTargets default marketplace", () => {
+  it("a fire for a user whose default maps the game to cardmarket carries cardmarket — fees and deep link follow", async () => {
+    db.watchItems = [watchItem("c1")];
+    db.settings = settingsWithDefaults(JSON.stringify({ mtg: "cardmarket" }));
+
+    const created = await evaluateWatchTargets(new Date());
+
+    expect(created).toBe(1);
+    const p = state.rows[0];
+    expect(p).toMatchObject({ userId: "u1", cardId: "c1", ruleId: null, side: "buy", proposedPrice: 10, marketplace: "cardmarket" });
+    // Fees follow the resolved marketplace: buyEdge under cardmarket's 5%
+    // profile against the $12 median (12 × 0.95 − 10 = +1.40), not tcgplayer's 12.75%.
+    expect(p.netAfterFees).toBe(1.4);
+    // And so does the deep link.
+    expect(p.deepLink).toContain("cardmarket.com");
+    expect(vi.mocked(dispatchNotification)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dispatchNotification).mock.calls[0][0]).toMatchObject({ kind: "proposal", proposalId: p.id });
+  });
+
+  it("falls back to tcgplayer with no settings row, an empty map, or an unknown value", async () => {
+    const scenarios: Array<Row | null> = [
+      null,
+      settingsWithDefaults("{}"),
+      settingsWithDefaults(JSON.stringify({ mtg: "amazon" })),
+      settingsWithDefaults("not json{"),
+    ];
+    for (const settings of scenarios) {
+      state.rows = [];
+      state.view = [];
+      db.watchItems = [watchItem("c1")];
+      db.settings = settings;
+
+      expect(await evaluateWatchTargets(new Date())).toBe(1);
+      expect(state.rows[0].marketplace).toBe("tcgplayer");
+      expect(state.rows[0].deepLink).toContain("tcgplayer.com");
+    }
   });
 });
 
