@@ -35,3 +35,26 @@ merge → push. One cycle per hour.
    message; +10 tests.
 
 Tests: 45 → 63 passing. Deferred ideas moved to BACKLOG.md.
+
+## Cycle 2 — 2026-07-07 ~22:17–22:35 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Close the act loop** — approving a proposal previously only flipped its
+   status; the app's core promise was unfulfilled. Approving a BUY now adds
+   the card to inventory and clears it from the watchlist; approving a SELL
+   consumes holdings oldest-first (with a quantity split when needed) and
+   apportions fees exactly across sold rows. Undo reverses everything
+   precisely via an effect record stored in the proposal snapshot. New pure
+   planner `src/lib/actLoop.ts` + 8 tests.
+2. **Honor user fee profiles** — worker proposals and the card-page net
+   column used hardcoded default fees, ignoring the Settings fee profiles.
+   New `mergeFeeProfiles` helper (NaN-safe validation, falls back to
+   defaults) now feeds both surfaces; copy updated to say "your profile".
+   +4 tests.
+3. **Sold view + realized P/L** — sold cards no longer vanish: inventory has
+   a Status filter (Active/Owned/Listed/Sold/All), sold rows show sale price
+   and realized P/L, footer and summary strip surface total realized P/L.
+   +5 tests.
+
+Tests: 63 → 80 passing.

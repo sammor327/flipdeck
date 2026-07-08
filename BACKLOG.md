@@ -6,8 +6,6 @@ or when rejected.
 
 ## Engine / correctness
 - Watchlist target prices are inert — evaluate targetBuy/targetSell in the worker tick and add target-editing UI
-- Close the act loop: approving a proposal should update inventory (mark listed/sold, add bought card, remove from watchlist)
-- Honor user fee profiles in card-page net math and worker createProposal instead of DEFAULT_FEE_PROFILES
 - Worker robustness: re-entrancy guard across the three runTick entry points, per-card try/catch, always run expireStaleProposals, self-scheduling setTimeout loop instead of setInterval
 - Flush quiet-hours-held notifications when the window ends; implement digestMode as the morning-summary mechanism
 - Best-spread freshness window in src/lib/stats.ts so stale quotes can't fabricate cross-market spreads
@@ -19,7 +17,7 @@ or when rejected.
 - Per-(rule,card) cooldown instead of per-rule lastFiredAt
 
 ## UX / UI
-- Sold cards vanish: add a Sold view/filter and surface realized P/L (summary strip or a small /performance page)
+- Sold-view follow-ups (cycle 2 review nits): P/L $ column sorts by unrealizedPL so sorting is inert in the Sold view; summary strip counts legacy null-soldPrice sales as full-cost loss while the row shows an em-dash
 - Replace window.prompt sell/list/edit flows in InventoryTable with an inline panel showing net-after-fees preview and post-sale confirmation
 - Add confirmation/undo to destructive actions (bulk delete in InventoryTable, rule delete in RuleRow)
 - Shared toast/inline-feedback primitive; wire error branches of createRule, WatchButton, AddCardForm, bulk actions through it
