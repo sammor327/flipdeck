@@ -145,3 +145,29 @@ renders unswept expired proposals (cosmetic; actions are guarded).
    set's real size (was both inflatable and falsely zero). +7 tests.
 
 Tests: 120 → 136 passing.
+
+## Cycle 7 — 2026-07-08 ~03:17–03:50 (critique mode)
+
+Fresh 4-critic sweep: 29 findings → 3 selected, 3 implemented, 3 approved,
+3 merged.
+
+1. **Notify-only rules work; spread rules use your fees** — "Notify only"
+   rules silently created trade proposals (or nothing, for zero-holdings
+   sells); they now dispatch info notifications with cooldown and skip
+   guardrails/spend-cap. And 'spread' rule triggers now evaluate the
+   owner's after-fee spread (reusing cycle 6's spreads module, batched +
+   cached per user) instead of the default-fee cached stat. +8 tests.
+2. **Push → tap → done** — the pitch deck's headline loop: Approve/Decline
+   buttons on push notifications now actually work end-to-end. New
+   authenticated POST /api/proposals/[id]/approve|decline route delegating
+   to the atomic server actions; the service worker attaches buttons only
+   to proposal pushes, POSTs on tap, and shows a confirmation notification
+   with the marketplace deep link. Live-verified with curl: 200/409/404
+   paths all correct.
+3. **Inventory write-boundary status guards** — sell/list/unlist/bulkList
+   now conditionally claim rows by status (cycle-4 pattern), so a stale tab
+   can't overwrite a sale's history ("Already sold" instead); re-watching a
+   card no longer clobbers its targets/notes. +12 tests incl. a mocked
+   concurrent flip-to-sold.
+
+Tests: 136 → 156 passing.

@@ -5,15 +5,16 @@ reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
 or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
 
 ## Engine / correctness
-- 'Spread' rule trigger per-user fees in the evaluator (tick.ts ctx.bestSpreadPct still uses the default-fee cached stat) — reuse the new src/lib/spreads.ts helper (natural follow-up to cycle 6)
-- Worker robustness: single-flight guard across the three runTick entry points, self-scheduling setTimeout loop, per-card/per-proposal try/catch, wire the unused rate limiter
-- Flush quiet-hours-held notifications when the window ends; implement digestMode as the morning-summary mechanism
-- PricePoint retention/compaction pass + bounded recomputeStat reads — unbounded growth grinds the worker down
-- MarketStat staleness surfaced in UI ('prices as of X — worker may be stopped') and skip rule evaluation on frozen stats
-- Wire dead plumbing: drain dirtyCards in rule evaluation, batch MarketStat loads
+- Worker robustness: single-flight guard across the three runTick entry points, self-scheduling setTimeout loop, per-card/per-proposal error isolation (ingest loop try/catch, dispatch try/catch in sweeps), wire the unused rate limiter
+- Race-safe proposal creation: pending-dedup findFirst→create has no DB backstop; needs conditional lastFiredAt claim (pair with single-flight item)
+- Quiet-hours flush sweep + digestMode morning summary; defer/lengthen expiry for proposals born in quiet hours
+- createRule write-boundary validation: whitelist marketplace against MARKETPLACES, clamp cooldown/expiry/quantity, finite numeric params (unknown marketplace makes the rule silently dead)
+- Auth hygiene: magic-link consume race (conditional-claim updateMany), per-IP/email throttle, purge expired sessions/tokens in worker, upsertUserByEmail P2002 race
+- PricePoint retention/compaction pass + bounded recomputeStat reads + cache primarySeries per card within a tick
+- MarketStat freshness gate in rule/watch evaluation; surface per-card staleness in UI; drain the dead dirtyCards queue
+- Provider honesty: log/count mock-fallback engagements per tick, skip ingest instead of fabricating on real-provider failure, scale mock volatility by tick interval
 
 ## Features (bigger, may need own cycle)
-- Push notification Approve/Decline action buttons are dead — branch on event.action in public/sw.js and add authenticated POST /api/proposals/[id]/approve|decline routes reusing the act-loop logic
 - Card search/ingest from providers (searchCards on the provider interface, create Card rows on demand, CSV import creates unmatched catalog entries) — L effort, core Track promise
 - Analytics page: win rate, avg hold duration, best/worst flips, per-game breakdown from sold rows (FEATURES #11)
 - Saved views in inventory (FEATURES #3) — persist named filter+sort combos in localStorage; add price-band and trend filters
