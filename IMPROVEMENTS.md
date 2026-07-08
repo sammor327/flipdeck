@@ -103,3 +103,24 @@ Fresh 4-critic sweep: 29 findings → 3 selected, 3 implemented, 3 approved,
    undo bar and a recoverable link in alert history.
 
 Tests: 97 → 111 passing.
+
+## Cycle 5 — 2026-07-08 ~01:17–01:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Expired proposals no longer masquerade as pending** — sidebar badge,
+   dashboard tile, and approvals list now filter on `expiresAt > now`, and
+   approve/decline claims include the expiry check atomically, so a stale
+   tab can't act on an expired proposal. +4 tests.
+2. **Declined-proposal hindsight** — the pitch-deck promise "declining would
+   have netted +$41" was a dead notification kind. New worker sweep records
+   outcome price/note on lapsed declines and dispatches exactly-once
+   hindsight notifications (idempotent claim, undo-window aware). +5 tests.
+3. **Inline sell/list/edit panel** — `window.prompt` money flows replaced
+   with an inline panel: live net-after-fees preview using the user's own
+   fee profiles (same pure function the server uses), projected realized
+   P/L, marketplace select, inline validation errors, keyboard support.
+   Verified live in a browser against a dev server.
+
+Tests: 111 → 120 passing. Known follow-up queued: dashboard card list still
+renders unswept expired proposals (cosmetic; actions are guarded).

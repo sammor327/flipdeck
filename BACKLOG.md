@@ -5,8 +5,7 @@ reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
 or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
 
 ## Engine / correctness
-- Declined-proposal hindsight sweep — dispatch the dead 'hindsight' notification kind (S, high value; touches expireStaleProposals region of tick.ts)
-- Expired proposals linger as 'pending' in sidebar badge, dashboard tile, and approvals count — add expiresAt > now to pending queries (queries.ts, layout.tsx, alerts page)
+- Dashboard home page approvals card list still renders unswept expired proposals (src/app/(app)/page.tsx ~line 43, unfiltered status:"pending" findMany) — cosmetic, actions are guarded (cycle 5 reviewer catch)
 - Spread scanner, dashboard spread columns, and 'spread' rule trigger ignore user fee profiles — compute per-user bestSpread at read time and in the rule evaluator; label the cached default-fee stat honestly
 - Fast-lane tick misses watch-target cards and the sidebar fast-lane count is wrong — include watchlist targets in the fast-lane id set (tick.ts + layout.tsx)
 - Worker robustness: single-flight guard across the three runTick entry points, self-scheduling setTimeout loop, per-card/per-proposal try/catch, wire the unused rate limiter
@@ -24,8 +23,7 @@ or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
 - Top-bar search should hit the card catalog with links/Watch buttons, and implement or drop the advertised Cmd/Ctrl-K shortcut
 
 ## UX / UI
-- Replace window.prompt sell/list/edit flows with an inline panel showing net-after-fees preview and post-sale realized P/L confirmation (also blocks mobile Safari)
-- Confirmation/undo for bulk delete and rule delete (contradicts 'every action has an undo' copy)
+- Confirmation/undo for bulk delete and rule delete (contradicts 'every action has an undo' copy); bulk-bar prompts are still window.prompt-based; listed row's Sell prefill could use listedPrice
 - Shared toast/inline-feedback primitive; wire dropped error branches in RuleBuilder, NewRuleForm, WatchButton, TargetCell, AddCardForm, bulk actions
 - requireUser() helper redirecting to /signin instead of non-null assertions on every (app) page (session-expiry crash)
 - Mobile polish: sidebar backdrop/click-away + Escape, phone-first approval layout per mockups/mobile-approval.html
