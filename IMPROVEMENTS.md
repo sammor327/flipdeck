@@ -58,3 +58,24 @@ Tests: 45 → 63 passing. Deferred ideas moved to BACKLOG.md.
    +5 tests.
 
 Tests: 63 → 80 passing.
+
+## Cycle 3 — 2026-07-07 ~23:17–23:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Watchlist target prices are live** — targets were stored but never
+   evaluated and not editable. New pure `src/lib/watchTargets.ts` (+9 tests);
+   the worker tick now fires buy proposals when price ≤ target buy and sell
+   proposals when price ≥ target sell (only if you hold copies), with 6h
+   cooldown dedup, guardrails (kill switch/spend cap), fee-profile math, and
+   notifications. Watchlist table gained click-to-edit target cells.
+2. **Sold-view fixes + Unlist** — P/L column now sorts by realized P/L for
+   sold rows (nulls last); legacy sales with no recorded price no longer
+   booked as full-cost losses in the summary; listed rows gained an Unlist
+   button (action existed, had no UI caller). +2 tests.
+3. **Spread freshness window** — cross-market spreads now ignore quotes older
+   than 48h (configurable), so a stale listing can't fabricate arbitrage; the
+   card-page spread panel filters the same way while the price table still
+   shows stale rows. +6 tests.
+
+Tests: 80 → 97 passing.
