@@ -261,3 +261,25 @@ Tests: 193 → 227 passing.
    "+N quotes · M proposals". +4 tests.
 
 Tests: 227 → 235 passing.
+
+## Cycle 12 — 2026-07-08 ~08:17–08:45 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **defaultMarketplaces honored** — the per-game default-marketplace
+   setting was a dead knob; worker proposals and watch-target fires now
+   resolve marketplace as: spread legs > explicit rule marketplace > user
+   per-game default > tcgplayer (whitelisted, malformed-JSON safe). Also
+   deduped the duplicated daily-spend query into shared `src/lib/spend.ts`.
+   +6 tests.
+2. **Dead push subscriptions pruned** — 404/410 Gone endpoints are deleted
+   after delivery attempts, and the console fallback now fires whenever no
+   live subscription delivered (previously: silent void). +new
+   dispatch/webpush test suites.
+3. **Inventory UX finish** — bulk bar's window.prompt flows replaced with
+   inline mini-forms (validated price/tag inputs, two-step danger-styled
+   delete confirm, Escape keeps selection), bulk/add-card errors surface
+   inline, selection shows total market value, and a first-run onboarding
+   empty state with working Add/Import CTAs. Verified live in a browser.
+
+Tests: 235 → 254 passing.
