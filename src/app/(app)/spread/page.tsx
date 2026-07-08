@@ -28,7 +28,7 @@ export default async function SpreadScannerPage() {
             actionLabel="View"
           />
           <div className="hint" style={{ marginTop: 10 }}>
-            *Spread = best cross-marketplace buy→sell gap after the default fee profile (tune it in Settings).
+            *Spread = best cross-marketplace buy→sell gap after your fee &amp; shipping profiles (tune them in Settings).
           </div>
         </>
       )}

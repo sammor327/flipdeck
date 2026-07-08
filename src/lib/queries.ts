@@ -3,10 +3,13 @@
 // are plain async functions called from server components.
 
 import type { CardRow } from "./cardRow";
-import { conditionMultiplier, type Condition } from "./constants";
+import { conditionMultiplier, type Condition, type Marketplace } from "./constants";
 import { prisma } from "./db";
+import { mergeFeeProfiles } from "./feeProfiles";
 import { round2 } from "./math";
 import { summarize, valueHolding, type HoldingInput, type PortfolioSummary } from "./portfolio";
+import { userBestSpreads, type UserSpread } from "./spreads";
+import { SPREAD_FRESHNESS_MS } from "./stats";
 
 export interface InventoryRow {
   id: string;
@@ -146,6 +149,34 @@ export async function trackedCardIds(userId: string): Promise<string[]> {
   return [...new Set([...inv.map((i) => i.cardId), ...watch.map((w) => w.cardId)])];
 }
 
+/**
+ * Per-user best spread for a set of cards, computed at read time with the
+ * viewer's merged fee profiles. The cached MarketStat.bestSpread* fields use
+ * DEFAULT_FEE_PROFILES, so list surfaces call this instead — mirroring the
+ * card detail page. One batched pricePoint query; no settings row → defaults.
+ */
+async function userSpreadMap(userId: string, cardIds: string[]): Promise<Map<string, UserSpread>> {
+  if (cardIds.length === 0) return new Map();
+  const now = new Date();
+  const [settings, points] = await Promise.all([
+    prisma.userSettings.findUnique({ where: { userId } }),
+    prisma.pricePoint.findMany({
+      where: {
+        cardId: { in: cardIds },
+        condition: "NM",
+        priceType: { in: ["market", "sold"] },
+        capturedAt: { gte: new Date(now.getTime() - SPREAD_FRESHNESS_MS) },
+      },
+      select: { cardId: true, marketplace: true, price: true, currency: true, priceType: true, capturedAt: true },
+    }),
+  ]);
+  return userBestSpreads(
+    points.map((p) => ({ ...p, marketplace: p.marketplace as Marketplace })),
+    mergeFeeProfiles(settings?.feeProfiles),
+    { now }
+  );
+}
+
 export interface MoverRow {
   cardId: string;
   name: string;
@@ -165,7 +196,7 @@ export interface MoverRow {
 export async function getTopMovers(userId: string, limit = 6): Promise<MoverRow[]> {
   const cardIds = await trackedCardIds(userId);
   if (cardIds.length === 0) return [];
-  const [stats, sparks, ownedRows] = await Promise.all([
+  const [stats, sparks, ownedRows, spreads] = await Promise.all([
     prisma.marketStat.findMany({ where: { cardId: { in: cardIds } }, include: { card: { include: { game: true } } } }),
     sparkMap(cardIds),
     prisma.inventoryItem.findMany({
@@ -173,6 +204,7 @@ export async function getTopMovers(userId: string, limit = 6): Promise<MoverRow[
       select: { cardId: true },
       distinct: ["cardId"],
     }),
+    userSpreadMap(userId, cardIds),
   ]);
   const ownedSet = new Set(ownedRows.map((r) => r.cardId));
   const rows: MoverRow[] = stats.map((s) => ({
@@ -186,7 +218,7 @@ export async function getTopMovers(userId: string, limit = 6): Promise<MoverRow[
     price: s.currentPrice,
     delta24hPct: s.delta24hPct,
     delta7dPct: s.delta7dPct,
-    bestSpreadPct: s.bestSpreadPct,
+    bestSpreadPct: spreads.get(s.cardId)?.netPct ?? null,
     spark: sparks.get(s.cardId) ?? [],
     owned: ownedSet.has(s.cardId),
   }));
@@ -298,38 +330,48 @@ export async function getWatchlistRows(userId: string): Promise<CardRow[]> {
 export async function getSpreadRows(userId: string): Promise<CardRow[]> {
   const cardIds = await trackedCardIds(userId);
   if (cardIds.length === 0) return [];
-  const stats = await prisma.marketStat.findMany({
-    where: { cardId: { in: cardIds }, bestSpreadPct: { not: null } },
-    include: { card: { include: { game: true } } },
-  });
-  return stats.map((s) => ({
-    cardId: s.cardId,
-    name: s.card.name,
-    setCode: s.card.setCode,
-    setName: s.card.setName,
-    rarity: s.card.rarity,
-    gameSlug: s.card.game.slug,
-    gameName: s.card.game.name,
-    imageUrl: s.card.imageUrl,
-    price: s.currentPrice,
-    bestSpreadPct: s.bestSpreadPct,
-    bestSpreadBuy: s.bestSpreadBuy,
-    bestSpreadSell: s.bestSpreadSell,
-    liquidityScore: s.liquidityScore,
-  }));
+  const [stats, spreads] = await Promise.all([
+    prisma.marketStat.findMany({
+      where: { cardId: { in: cardIds } },
+      include: { card: { include: { game: true } } },
+    }),
+    userSpreadMap(userId, cardIds),
+  ]);
+  const rows: CardRow[] = [];
+  for (const s of stats) {
+    const sp = spreads.get(s.cardId);
+    if (!sp) continue; // fewer than two fresh marketplaces → no spread to show
+    rows.push({
+      cardId: s.cardId,
+      name: s.card.name,
+      setCode: s.card.setCode,
+      setName: s.card.setName,
+      rarity: s.card.rarity,
+      gameSlug: s.card.game.slug,
+      gameName: s.card.game.name,
+      imageUrl: s.card.imageUrl,
+      price: s.currentPrice,
+      bestSpreadPct: sp.netPct,
+      bestSpreadBuy: sp.buyMarketplace,
+      bestSpreadSell: sp.sellMarketplace,
+      liquidityScore: s.liquidityScore,
+    });
+  }
+  return rows;
 }
 
 /** Market-wide movers (all cards), for the dedicated Top Movers page. */
 export async function getMoverRows(userId: string): Promise<CardRow[]> {
   const stats = await prisma.marketStat.findMany({ include: { card: { include: { game: true } } } });
   const cardIds = stats.map((s) => s.cardId);
-  const [sparks, ownedRows] = await Promise.all([
+  const [sparks, ownedRows, spreads] = await Promise.all([
     sparkMap(cardIds),
     prisma.inventoryItem.findMany({
       where: { portfolio: { userId }, status: { in: ["owned", "listed"] } },
       select: { cardId: true },
       distinct: ["cardId"],
     }),
+    userSpreadMap(userId, cardIds),
   ]);
   const owned = new Set(ownedRows.map((r) => r.cardId));
   return stats.map((s) => ({
@@ -344,7 +386,7 @@ export async function getMoverRows(userId: string): Promise<CardRow[]> {
     price: s.currentPrice,
     delta24hPct: s.delta24hPct,
     delta7dPct: s.delta7dPct,
-    bestSpreadPct: s.bestSpreadPct,
+    bestSpreadPct: spreads.get(s.cardId)?.netPct ?? null,
     liquidityScore: s.liquidityScore,
     spark: sparks.get(s.cardId) ?? [],
     owned: owned.has(s.cardId),
