@@ -5,9 +5,7 @@ reads this each cycle; delete items when done (log them in IMPROVEMENTS.md)
 or when rejected. Rebuilt from the cycle-4 critique sweep (re-verified).
 
 ## Engine / correctness
-- Dashboard home page approvals card list still renders unswept expired proposals (src/app/(app)/page.tsx ~line 43, unfiltered status:"pending" findMany) — cosmetic, actions are guarded (cycle 5 reviewer catch)
-- Spread scanner, dashboard spread columns, and 'spread' rule trigger ignore user fee profiles — compute per-user bestSpread at read time and in the rule evaluator; label the cached default-fee stat honestly
-- Fast-lane tick misses watch-target cards and the sidebar fast-lane count is wrong — include watchlist targets in the fast-lane id set (tick.ts + layout.tsx)
+- 'Spread' rule trigger per-user fees in the evaluator (tick.ts ctx.bestSpreadPct still uses the default-fee cached stat) — reuse the new src/lib/spreads.ts helper (natural follow-up to cycle 6)
 - Worker robustness: single-flight guard across the three runTick entry points, self-scheduling setTimeout loop, per-card/per-proposal try/catch, wire the unused rate limiter
 - Flush quiet-hours-held notifications when the window ends; implement digestMode as the morning-summary mechanism
 - PricePoint retention/compaction pass + bounded recomputeStat reads — unbounded growth grinds the worker down

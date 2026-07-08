@@ -124,3 +124,24 @@ Tests: 97 → 111 passing.
 
 Tests: 111 → 120 passing. Known follow-up queued: dashboard card list still
 renders unswept expired proposals (cosmetic; actions are guarded).
+
+## Cycle 6 — 2026-07-08 ~02:17–02:40 (backlog mode)
+
+3 selected from BACKLOG.md, 3 implemented, 3 approved, 3 merged.
+
+1. **Dashboard approvals panel consistency** — last cosmetic hole from
+   cycle 5's expiry work: the home-page card list now filters unswept
+   expired proposals, so tile, sub-header, cards, and "View all N" agree.
+   Verified live in a browser before/after.
+2. **Per-user spread everywhere** — the spread scanner (the "flipper's
+   front page"), Top Movers, and mover rows computed spreads from cached
+   default-fee stats. New pure `src/lib/spreads.ts` computes best spread
+   from the viewer's own fee profiles at read time (48h freshness, EUR
+   conversion, batched loading). +9 tests.
+3. **Fast lane covers watch targets** — cards with watchlist targets but no
+   alert rule were excluded from the 5-min fast lane (targets could lag an
+   hour); the fast-lane id set is now rules ∪ watch-targets via new
+   `src/lib/fastLane.ts`, and the sidebar fast-lane count reports that
+   set's real size (was both inflatable and falsely zero). +7 tests.
+
+Tests: 120 → 136 passing.
