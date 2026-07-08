@@ -8,10 +8,18 @@ import { round2 } from "@/lib/math";
 export async function addWatch(cardId: string, targetBuyPrice?: number, targetSellPrice?: number, notes?: string) {
   const user = await getCurrentUser();
   if (!user) return { ok: false, error: "Not signed in" };
+  // The update branch only touches fields the caller explicitly provided
+  // (mirroring updateWatchTargets) — re-watching an already-watched card with
+  // no arguments (stale button state, double-click) must never null out the
+  // targets/notes that drive live worker proposals.
+  const update: { targetBuyPrice?: number | null; targetSellPrice?: number | null; notes?: string | null } = {};
+  if (targetBuyPrice !== undefined) update.targetBuyPrice = targetBuyPrice;
+  if (targetSellPrice !== undefined) update.targetSellPrice = targetSellPrice;
+  if (notes !== undefined) update.notes = notes;
   await prisma.watchlistItem.upsert({
     where: { userId_cardId: { userId: user.id, cardId } },
     create: { userId: user.id, cardId, targetBuyPrice: targetBuyPrice ?? null, targetSellPrice: targetSellPrice ?? null, notes: notes ?? null },
-    update: { targetBuyPrice: targetBuyPrice ?? null, targetSellPrice: targetSellPrice ?? null, notes: notes ?? null },
+    update,
   });
   revalidatePath("/watchlist");
   revalidatePath(`/cards/${cardId}`);

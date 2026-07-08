@@ -86,10 +86,21 @@ export async function listInventoryItem(id: string, price: number, marketplace: 
   if (!isKnownMarketplace(marketplace)) return { ok: false, error: "Unknown marketplace" };
   const ctx = await ownItem(id);
   if (!ctx) return { ok: false, error: "Not found" };
-  await prisma.inventoryItem.update({
-    where: { id },
-    data: { status: "listed", listedPrice: round2(price), listedMarketplace: marketplace },
+  // Conditional claim (same pattern as proposals): a stale tab must not flip a
+  // sold row back to "listed" and re-enter it into active-portfolio math. The
+  // sold* resets are belt-and-braces — an owned/listed row never has them set.
+  const claim = await prisma.inventoryItem.updateMany({
+    where: { id, status: { in: ["owned", "listed"] } },
+    data: {
+      status: "listed",
+      listedPrice: round2(price),
+      listedMarketplace: marketplace,
+      soldPrice: null,
+      soldFees: null,
+      soldAt: null,
+    },
   });
+  if (claim.count === 0) return { ok: false, error: "Already sold" };
   revalidatePath("/inventory");
   return { ok: true };
 }
@@ -97,7 +108,13 @@ export async function listInventoryItem(id: string, price: number, marketplace: 
 export async function unlistInventoryItem(id: string) {
   const ctx = await ownItem(id);
   if (!ctx) return { ok: false, error: "Not found" };
-  await prisma.inventoryItem.update({ where: { id }, data: { status: "owned", listedPrice: null, listedMarketplace: null } });
+  // Only a listed row can be unlisted — a stale tab must not resurrect a sold
+  // row as "owned".
+  const claim = await prisma.inventoryItem.updateMany({
+    where: { id, status: "listed" },
+    data: { status: "owned", listedPrice: null, listedMarketplace: null },
+  });
+  if (claim.count === 0) return { ok: false, error: "Not listed" };
   revalidatePath("/inventory");
   return { ok: true };
 }
@@ -110,8 +127,12 @@ export async function sellInventoryItem(id: string, soldPrice: number, marketpla
   const settings = await prisma.userSettings.findUnique({ where: { userId: ctx.user.id } });
   const profiles = mergeFeeProfiles(settings?.feeProfiles);
   const proceeds = netProceeds(soldPrice, ctx.item.quantity, profiles[marketplace]);
-  await prisma.inventoryItem.update({
-    where: { id },
+  // Conditional claim: only an owned/listed row may transition to "sold". A
+  // re-sell from a stale tab must not overwrite soldPrice/soldFees/soldAt and
+  // rewrite realized-P/L history. ownItem() above handles auth + fee math; the
+  // claim is the gate.
+  const claim = await prisma.inventoryItem.updateMany({
+    where: { id, status: { in: ["owned", "listed"] } },
     data: {
       status: "sold",
       soldPrice: round2(soldPrice),
@@ -121,6 +142,7 @@ export async function sellInventoryItem(id: string, soldPrice: number, marketpla
       listedMarketplace: null,
     },
   });
+  if (claim.count === 0) return { ok: false, error: "Already sold" };
   revalidatePath("/inventory");
   revalidatePath("/");
   return { ok: true, net: proceeds.net };
@@ -161,12 +183,14 @@ export async function bulkList(ids: string[], price: number) {
   const user = await getCurrentUser();
   if (!user) return { ok: false, error: "Not signed in" };
   const valid = await ownedIds(ids, user.id);
-  await prisma.inventoryItem.updateMany({
-    where: { id: { in: valid } },
+  // Status guard: sold rows selected in a stale tab are skipped, and the
+  // returned count reflects the rows actually claimed, not the ids submitted.
+  const claimed = await prisma.inventoryItem.updateMany({
+    where: { id: { in: valid }, status: { in: ["owned", "listed"] } },
     data: { status: "listed", listedPrice: round2(price), listedMarketplace: "tcgplayer" },
   });
   revalidatePath("/inventory");
-  return { ok: true, count: valid.length };
+  return { ok: true, count: claimed.count };
 }
 
 export async function bulkDelete(ids: string[]) {
