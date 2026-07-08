@@ -6,7 +6,7 @@ import { GameChip } from "@/components/GameChip";
 import { PriceChart } from "@/components/PriceChart";
 import { Sparkline } from "@/components/Sparkline";
 import { EmptyState } from "@/components/states";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { formatCountdown, formatMoney } from "@/lib/format";
 import { HEADLINE_TAG_META, HEADLINES } from "@/lib/headlines";
@@ -31,7 +31,7 @@ function greeting(): string {
 }
 
 export default async function DashboardPage() {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const [{ summary }, series, stats, movers] = await Promise.all([
     getInventoryRows(user.id),
     getPortfolioSeries(user.id),

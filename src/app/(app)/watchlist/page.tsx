@@ -1,11 +1,11 @@
 import Link from "next/link";
 import { CardTable } from "@/components/CardTable";
 import { EmptyState } from "@/components/states";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { getWatchlistRows } from "@/lib/queries";
 
 export default async function WatchlistPage() {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const rows = await getWatchlistRows(user.id);
 
   return (

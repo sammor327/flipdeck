@@ -7,7 +7,7 @@ import { Tabs } from "@/components/Tabs";
 import { EmptyState } from "@/components/states";
 import type { ProposeSide, RuleTrigger } from "@/lib/constants";
 import type { RuleParams } from "@/lib/alerts/types";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { formatMoney, formatRelativeTime } from "@/lib/format";
 import { fromJson } from "@/lib/json";
@@ -45,7 +45,7 @@ const feedIcon = (kind: string, actedOn: boolean): string => {
 };
 
 export default async function AlertsPage({ searchParams }: { searchParams: { proposal?: string } }) {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
 
   const [pending, notifications, rules, history, proposals30] = await Promise.all([
     // Past-expiry pending rows drop out of Approvals immediately; the worker

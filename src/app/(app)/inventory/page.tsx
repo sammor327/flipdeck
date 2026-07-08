@@ -1,12 +1,12 @@
 import { InventoryTable, type CatalogEntry } from "@/components/InventoryTable";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { mergeFeeProfiles } from "@/lib/feeProfiles";
 import { formatMoney } from "@/lib/format";
 import { getInventoryRows } from "@/lib/queries";
 
 export default async function InventoryPage({ searchParams }: { searchParams: { q?: string } }) {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const [{ rows, summary }, cards, settings] = await Promise.all([
     getInventoryRows(user.id),
     prisma.card.findMany({ include: { game: true }, orderBy: { name: "asc" } }),

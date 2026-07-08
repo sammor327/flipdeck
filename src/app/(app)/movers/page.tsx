@@ -2,7 +2,7 @@ import Link from "next/link";
 import { CardArt } from "@/components/CardArt";
 import { CardTable } from "@/components/CardTable";
 import { Delta } from "@/components/Delta";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import type { CardRow } from "@/lib/cardRow";
 import { formatMoney } from "@/lib/format";
 import { getMoverRows } from "@/lib/queries";
@@ -45,7 +45,7 @@ function MoverHighlight({ title, hint, cards }: { title: string; hint: string; c
 }
 
 export default async function MoversPage() {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const allRows = await getMoverRows(user.id);
   const byMove = [...allRows].sort((a, b) => (b.delta24hPct ?? 0) - (a.delta24hPct ?? 0));
   const gainers = byMove.filter((r) => (r.delta24hPct ?? 0) > 0).slice(0, 4);

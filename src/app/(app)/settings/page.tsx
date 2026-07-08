@@ -9,13 +9,13 @@ import {
   type GameSlug,
   type Marketplace,
 } from "@/lib/constants";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { fromJson } from "@/lib/json";
 import { providerModeFor } from "@/lib/providers";
 
 export default async function SettingsPage() {
-  const user = (await getCurrentUser())!;
+  const user = await requireUser();
   const settings = await prisma.userSettings.findUnique({ where: { userId: user.id } });
 
   const feeProfiles = {

@@ -9,6 +9,7 @@
 
 import { randomBytes } from "crypto";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { cache } from "react";
 import { prisma } from "./db";
 
@@ -59,6 +60,17 @@ export const getCurrentUser = cache(async () => {
   }
   return null;
 });
+
+/**
+ * The signed-in user, or a redirect to /signin. For pages/layouts only —
+ * server actions and API routes should keep returning { ok: false } /
+ * error responses instead of redirecting.
+ */
+export async function requireUser() {
+  const user = await getCurrentUser();
+  if (!user) redirect("/signin");
+  return user;
+}
 
 export async function upsertUserByEmail(email: string, name?: string) {
   const existing = await prisma.user.findUnique({ where: { email } });
