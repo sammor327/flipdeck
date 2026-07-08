@@ -77,6 +77,9 @@ describe("userBestSpreads", () => {
     expect(got.netPct).toBe(expected.netPct);
     expect(got.buyMarketplace).toBe("tcgplayer");
     expect(got.sellMarketplace).toBe("ebay");
+    // Leg prices ride along so a spread-rule fire can propose the actual arb.
+    expect(got.buyPrice).toBe(100);
+    expect(got.sellPrice).toBe(130);
   });
 
   it("converts non-USD quotes to USD (EUR Cardmarket)", () => {
@@ -87,6 +90,9 @@ describe("userBestSpreads", () => {
     expect(got.sellMarketplace).toBe("cardmarket");
     expect(got.netPerCopy).toBeCloseTo(toUsd(100, "EUR") * 0.95 - 100);
     expect(got.netPct).toBeCloseTo(2.6);
+    // Leg prices are USD-normalized, not the native EUR quote.
+    expect(got.buyPrice).toBe(100);
+    expect(got.sellPrice).toBe(toUsd(100, "EUR"));
   });
 
   it("a card with only one fresh marketplace yields no spread", () => {

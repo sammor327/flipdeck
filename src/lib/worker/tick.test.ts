@@ -10,6 +10,11 @@
 // both pass the in-memory dedup cannot double-fire — and a guardrail block
 // must never consume the cooldown.
 //
+// Spread fires (cycle 11): the proposal must target the arbitrage's own legs
+// (buy/sell-leg marketplace + USD price, net = netPerCopy × qty, both legs in
+// the snapshot) while non-spread fires keep the rule marketplace at
+// currentPrice.
+//
 // runTick: single-flight (concurrent calls coalesce onto one tick) and
 // per-card error isolation (one bad card cannot abort the tick).
 
@@ -29,6 +34,9 @@ const { state, db, providers } = vi.hoisted(() => ({
     ruleRows: [] as Row[],
     ruleView: [] as Row[],
     settings: null as Row | null,
+    series: [] as Row[], // primarySeries pricePoints (tcgplayer NM market)
+    spreadPoints: [] as Row[], // fresh NM quotes served to the spread batch query
+    holdings: [] as Row[], // InventoryItems (sell-side holdings gate)
     cardLoads: 0,
     failNextCardLoad: false,
     proposalSeq: 0,
@@ -89,7 +97,10 @@ vi.mock("../db", () => ({
       findUnique: async ({ where }: any) => db.cards.find((c) => c.id === where.id) ?? null,
     },
     pricePoint: {
-      findMany: async () => [],
+      // primarySeries/recomputeStat constrain cardId to a single id; the spread
+      // batch uses cardId: { in: [...] } — that tells the call sites apart.
+      findMany: async ({ where }: any) =>
+        where?.cardId && typeof where.cardId === "object" && "in" in where.cardId ? db.spreadPoints : db.series,
       createMany: async ({ data }: any) => ({ count: data.length }),
     },
     marketStat: {
@@ -98,7 +109,7 @@ vi.mock("../db", () => ({
     },
     userSettings: { findUnique: async () => db.settings },
     watchlistItem: { findMany: async () => [] },
-    inventoryItem: { findMany: async () => [] },
+    inventoryItem: { findMany: async () => db.holdings },
     notificationLog: { findMany: async () => [] }, // held-notification flush: nothing held
   },
 }));
@@ -163,6 +174,9 @@ beforeEach(() => {
   db.ruleRows = [];
   db.ruleView = [];
   db.settings = null;
+  db.series = [];
+  db.spreadPoints = [];
+  db.holdings = [];
   db.cardLoads = 0;
   db.failNextCardLoad = false;
   providers.fetchQuotes = async () => [];
@@ -425,6 +439,124 @@ describe("evaluateAllRules cooldown claim", () => {
     // The blocked fire never touched lastFiredAt — the rule can fire the
     // moment the guardrail lifts.
     expect(db.ruleRows[0].lastFiredAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateAllRules: spread fires propose the actual arbitrage (cycle 11).
+// ---------------------------------------------------------------------------
+
+/** An enabled card-scoped spread rule (fires when the owner's net spread ≥ 10%). */
+function spreadRule(id: string, cardId: string, overrides: Partial<Row> = {}): Row {
+  return firingRule(id, cardId, {
+    trigger: "spread",
+    params: JSON.stringify({ spreadPct: 10 }),
+    proposeSide: "buy",
+    ...overrides,
+  });
+}
+
+/** Fresh NM quotes: buy tcgplayer @ $10 → sell ebay @ $15 nets +$3.01/copy (+30.1%) under default fees. */
+function stageSpreadPoints(cardId: string, now: Date): void {
+  db.spreadPoints = [
+    { cardId, marketplace: "tcgplayer", price: 10, currency: "USD", priceType: "market", capturedAt: now },
+    { cardId, marketplace: "ebay", price: 15, currency: "USD", priceType: "sold", capturedAt: now },
+  ];
+}
+
+describe("evaluateAllRules spread-rule proposals", () => {
+  it("a buy-side spread fire proposes the buy leg — its marketplace and USD price beat rule.marketplace and currentPrice", async () => {
+    const now = new Date();
+    stageCard("c1");
+    stageStat("c1", 99); // currentPrice must NOT leak into the proposal
+    stageSpreadPoints("c1", now);
+    // rule.marketplace is explicitly set — the spread legs still win: the arb
+    // only exists at its own two venues.
+    const rule = spreadRule("r1", "c1", { marketplace: "cardmarket", quantity: 2 });
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const res = await evaluateAllRules(now);
+    expect(res.proposalsCreated).toBe(1);
+    const p = state.rows[0];
+    expect(p).toMatchObject({ ruleId: "r1", side: "buy", marketplace: "tcgplayer", proposedPrice: 10, quantity: 2 });
+    // The actual arb net (netPerCopy × qty), not a median-based buyEdge.
+    expect(p.netAfterFees).toBe(6.02);
+    // Rationale + snapshot name both legs.
+    expect(p.rationale).toContain("Buy TCGplayer @ $10.00");
+    expect(p.rationale).toContain("sell eBay @ $15.00");
+    expect(JSON.parse(p.priceSnapshot)).toMatchObject({
+      buyMarketplace: "tcgplayer",
+      sellMarketplace: "ebay",
+      buyPrice: 10,
+      sellPrice: 15,
+      netPct: 30.1,
+      netPerCopy: 3.01,
+    });
+  });
+
+  it("a sell-side spread fire proposes the sell leg, priced at the sell leg's proceeds basis", async () => {
+    const now = new Date();
+    stageCard("c1");
+    stageStat("c1", 99);
+    stageSpreadPoints("c1", now);
+    const rule = spreadRule("r1", "c1", { proposeSide: "sell" });
+    db.holdings = [{ quantity: 3, costBasis: 4, status: "owned" }];
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const res = await evaluateAllRules(now);
+    expect(res.proposalsCreated).toBe(1);
+    const p = state.rows[0];
+    expect(p).toMatchObject({ side: "sell", marketplace: "ebay", proposedPrice: 15, quantity: 1, costBasis: 4 });
+    // Sells keep netProceeds on the sell leg: $15 minus 13.25% eBay fees.
+    expect(p.netAfterFees).toBe(13.01);
+  });
+
+  it("a sell-side spread fire with zero holdings still creates nothing (holdings gate unchanged)", async () => {
+    const now = new Date();
+    stageCard("c1");
+    stageStat("c1", 99);
+    stageSpreadPoints("c1", now);
+    const rule = spreadRule("r1", "c1", { proposeSide: "sell" });
+    db.holdings = [];
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const res = await evaluateAllRules(now);
+    expect(res.proposalsCreated).toBe(0);
+    expect(state.rows).toHaveLength(0);
+    expect(vi.mocked(dispatchNotification)).not.toHaveBeenCalled();
+  });
+
+  it("a pct_move fire is unchanged: rule marketplace at currentPrice, buyEdge net, no spread legs in the snapshot", async () => {
+    const now = new Date();
+    stageCard("c1");
+    stageStat("c1", 10); // median90d defaults to currentPrice
+    // 25h-old $20 → $10 now = −50% over 24h, fires direction:down.
+    db.series = [
+      { price: 20, capturedAt: new Date(now.getTime() - 25 * 3600_000), listingCount: null },
+      { price: 10, capturedAt: now, listingCount: null },
+    ];
+    const rule = firingRule("r1", "c1", {
+      trigger: "pct_move",
+      params: JSON.stringify({ movePct: 20, windowHours: 24, direction: "down" }),
+      proposeSide: "buy",
+      marketplace: "ebay",
+    });
+    db.ruleView = [rule];
+    db.ruleRows = [{ ...rule }];
+
+    const res = await evaluateAllRules(now);
+    expect(res.proposalsCreated).toBe(1);
+    const p = state.rows[0];
+    // Non-spread fires keep the old shape: rule.marketplace, currentPrice,
+    // buyEdge against the 90-day median ($10 → resell $10 on eBay = −$1.32).
+    expect(p).toMatchObject({ side: "buy", marketplace: "ebay", proposedPrice: 10, netAfterFees: -1.32 });
+    const snap = JSON.parse(p.priceSnapshot);
+    expect(snap.buyMarketplace).toBeUndefined();
+    expect(snap.sellMarketplace).toBeUndefined();
+    expect(snap.netPerCopy).toBeUndefined();
   });
 });
 

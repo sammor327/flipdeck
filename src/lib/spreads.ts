@@ -24,6 +24,8 @@ export interface UserSpread {
   netPerCopy: number;
   buyMarketplace: Marketplace;
   sellMarketplace: Marketplace;
+  buyPrice: number; // USD
+  sellPrice: number; // USD
 }
 
 /**
@@ -61,7 +63,7 @@ export function userBestSpreads(
   const out = new Map<string, UserSpread>();
   for (const [cardId, quotes] of quotesByCard) {
     const s = bestSpread(quotes, profiles);
-    if (s) out.set(cardId, { netPct: s.netPct, netPerCopy: s.netPerCopy, buyMarketplace: s.buyMarketplace, sellMarketplace: s.sellMarketplace });
+    if (s) out.set(cardId, { netPct: s.netPct, netPerCopy: s.netPerCopy, buyMarketplace: s.buyMarketplace, sellMarketplace: s.sellMarketplace, buyPrice: s.buyPrice, sellPrice: s.sellPrice });
   }
   return out;
 }

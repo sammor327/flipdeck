@@ -259,8 +259,21 @@ describe("evaluateAllRules — per-user spread evaluation", () => {
     expect(calls.proposalsCreated).toHaveLength(1);
     const proposal = calls.proposalsCreated[0];
     expect(proposal).toMatchObject({ userId: "u1", cardId: "c1", ruleId: "r1", side: "buy", status: "pending" });
+    // The proposal IS the arbitrage (cycle 11): buy-leg marketplace and price,
+    // net = the arb's netPerCopy × qty, both legs in rationale + snapshot.
+    expect(proposal).toMatchObject({ marketplace: "tcgplayer", proposedPrice: 10, netAfterFees: 3.01 });
+    expect(proposal.rationale).toContain("Buy TCGplayer @ $10.00");
+    expect(proposal.rationale).toContain("sell eBay @ $15.00");
     // The evidence carries the owner's spread ($10 → $15 minus 13.25% eBay fees = +30.1%).
-    expect(JSON.parse(proposal.priceSnapshot)).toMatchObject({ spreadPct: 30.1 });
+    expect(JSON.parse(proposal.priceSnapshot)).toMatchObject({
+      spreadPct: 30.1,
+      buyMarketplace: "tcgplayer",
+      sellMarketplace: "ebay",
+      buyPrice: 10,
+      sellPrice: 15,
+      netPct: 30.1,
+      netPerCopy: 3.01,
+    });
     expect(calls.ruleUpdates).toEqual([{ where: { id: "r1", lastFiredAt: null }, data: { lastFiredAt: now } }]);
     expect(vi.mocked(dispatchNotification)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(dispatchNotification).mock.calls[0][0]).toMatchObject({ kind: "proposal", proposalId: "tp-1", ruleId: "r1" });
