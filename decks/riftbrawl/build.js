@@ -85,7 +85,7 @@ async function icon(Comp, color, px = 256) {
 
     // 4-team ring diagram on the right
     const cx = 10.35, cy = 3.75, R = 1.55, d = 1.15;
-    const teams = ["A", "B", "C", "D"];
+    const teams = [["DSG", "Disguised"], ["TSS", "The Secret Sauce"], ["ASC", "Ascension"], ["CTCG", "Challenger TCG"]];
     const pts = teams.map((_, i) => {
       const a = (-Math.PI / 2) + i * (Math.PI / 2);
       return { x: cx + R * Math.cos(a) - d / 2, y: cy + R * Math.sin(a) - d / 2 };
@@ -98,8 +98,8 @@ async function icon(Comp, color, px = 256) {
     s.addImage({ data: I.trophy, x: cx - 0.3, y: cy - 0.3, w: 0.6, h: 0.6 });
     pts.forEach((p, i) => {
       s.addShape(pres.ShapeType.ellipse, { x: p.x, y: p.y, w: d, h: d, fill: { color: NAVY }, line: { color: GOLD, width: 2 } });
-      s.addText([{ text: "TEAM " + teams[i], options: { breakLine: true, fontSize: 9, color: GOLD } }, { text: "3 players", options: { fontSize: 10.5, color: CREAM, bold: true } }],
-        { x: p.x, y: p.y, w: d, h: d, fontFace: BODY, align: "center", valign: "middle", isTextBox: true, margin: 0 });
+      s.addText([{ text: teams[i][0], options: { breakLine: true, fontSize: 13, bold: true, color: GOLD2 } }, { text: teams[i][1], options: { fontSize: 7.5, color: CREAM } }],
+        { x: p.x + 0.08, y: p.y, w: d - 0.16, h: d, fontFace: BODY, align: "center", valign: "middle", isTextBox: true, margin: 0 });
     });
 
     s.addText("TURN'EM SIDEWAYS  ×  ANZIDMTG", { x: 0.7, y: 1.35, w: 7.5, h: 0.4, fontFace: BODY, fontSize: 14, color: GOLD, charSpacing: 4, isTextBox: true, margin: 0 });
@@ -119,7 +119,7 @@ async function icon(Comp, color, px = 256) {
     kicker(s, "A team-format invitational built for broadcast, not a Swiss grind.");
 
     const rows = [
-      ["users", "Four teams of three", "12 invited players in a 3v3v3v3 team brawl. Room to flex to 16 with an alternate per team."],
+      ["users", "Four teams of three", "Disguised, The Secret Sauce, Ascension and Challenger TCG in a 3v3v3v3 team brawl. Flexes to 16 with an alternate per team."],
       ["flag", "Round robin, every team plays every team", "Short, high-stakes rounds keep the desk busy and the bracket easy to follow on stream."],
       ["mic", "Produced showcase with commentary", "Camera-ready table, a two-person desk, overlays and player intros. Built to be watched."],
       ["tower", "Streamed on two channels", "Live on twitch.tv/turnemsideways and twitch.tv/anzidmtg, with VOD and highlights on YouTube."],
@@ -162,10 +162,18 @@ async function icon(Comp, color, px = 256) {
     kicker(s, "Pro-player invitational showdown, live from RQ Singapore weekend (Sept 4–6, 2026).");
 
     // left stats
-    stat(s, 0.65, 2.0, 2.6, "4", "teams: DSG · TSS · ASC · CTCG");
-    stat(s, 3.45, 2.0, 2.6, "12", "pro players on the feature table");
-    stat(s, 0.65, 3.85, 2.6, "3v3v3v3", "team brawl, round robin", TEAL);
-    stat(s, 3.45, 3.85, 2.6, "2", "streams: main broadcast + co-streams", TEAL);
+    stat(s, 0.65, 1.95, 2.6, "4", "invited teams");
+    stat(s, 3.45, 1.95, 2.6, "12", "pro players on the feature table");
+    stat(s, 0.65, 3.45, 2.6, "3v3v3v3", "team brawl, round robin", TEAL);
+    stat(s, 3.45, 3.45, 2.6, "2", "streams: main broadcast + co-streams", TEAL);
+    // team chips
+    const chips = [["DSG", "Disguised"], ["TSS", "The Secret Sauce"], ["ASC", "Ascension"], ["CTCG", "Challenger TCG"]];
+    chips.forEach(([ab, nm], i) => {
+      const cw = 1.38, cg = 0.1, cx0 = 0.65 + i * (cw + cg), cy0 = 5.0;
+      s.addShape(pres.ShapeType.roundRect, { x: cx0, y: cy0, w: cw, h: 0.66, fill: { color: CARD2 }, line: { color: GOLD, width: 1 }, rectRadius: 0.1 });
+      s.addText([{ text: ab, options: { breakLine: true, fontSize: 12, bold: true, color: GOLD2 } }, { text: nm, options: { fontSize: 8.5, color: CREAM } }],
+        { x: cx0, y: cy0, w: cw, h: 0.66, fontFace: BODY, align: "center", valign: "middle", isTextBox: true, margin: 0 });
+    });
 
     // right context card
     card(s, 6.9, 1.95, 5.85, 4.55);
@@ -185,10 +193,10 @@ async function icon(Comp, color, px = 256) {
     });
 
     s.addText("Takeaway: the format works on a live stage, the teams showed up, and the VODs are on YouTube now. Next: do it with proper prize support and a Friday slot.",
-      { x: 0.65, y: 5.6, w: 5.8, h: 0.95, fontFace: BODY, fontSize: 13, italic: true, color: GOLD2, isTextBox: true, margin: 0, valign: "top" });
+      { x: 0.65, y: 5.85, w: 5.8, h: 0.85, fontFace: BODY, fontSize: 12.5, italic: true, color: GOLD2, isTextBox: true, margin: 0, valign: "top" });
     footer(s, "Sources: YouTube “RIFTBRAWL: Singapore | A pro player invitational Showdown”, “RiftBrawl Singapore – DSG vs TSS vs ASC vs CTCG”; Liquipedia (RQ Singapore 2026); playriftbound.com “All Eyes on Singapore”.");
     pageNo(s, 3);
-    s.addNotes("Riftbrawl Singapore was a mini tournament for top teams attending RQ Singapore. Four teams (DSG, TSS, ASC, CTCG), streamed with co-streams; VODs uploaded roughly five days ago. Per-video view counts should be pulled from YouTube Studio before sending.");
+    s.addNotes("Riftbrawl Singapore was a mini tournament for top teams attending RQ Singapore. Four teams (Disguised, The Secret Sauce, Ascension, Challenger TCG), streamed with co-streams; VODs uploaded roughly five days ago. Per-video view counts should be pulled from YouTube Studio before sending.");
   }
 
   // =====================================================================
@@ -345,7 +353,7 @@ async function icon(Comp, color, px = 256) {
       "Approve 40 Prize Wall tickets (or LGS prize support)",
       "Confirm hotel, flight voucher and meals",
       "Assign Thursday table space in the hall",
-      "We invite the four teams and publish the schedule",
+      "Confirm the teams: Disguised, The Secret Sauce, Ascension, Challenger TCG",
     ];
     let y = 2.7;
     todo.forEach((t, i) => {
