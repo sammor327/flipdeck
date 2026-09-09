@@ -21,3 +21,8 @@ Built in the Turn'em Sideways deck system (matches `TES_Deck_Refresh_07-2026-v2.
 the left, yellow uppercase titles, lime / blue stat colors, highlighted label tags, gray
 cards, italic footnotes, and the logo splash closer. Brand images live in `assets/`
 (`bg.png`, `bg_closing.png`, `border_left.png`, `logo.png`), pulled from that deck.
+
+The PDF export needs Montserrat installed on the machine doing the export; without it,
+LibreOffice substitutes a different sans and the tags and titles look wrong. Static
+Montserrat instances (Regular / Bold / Italic / Bold Italic) can be generated from the
+Google Fonts variable file with fontTools `instancer`.
